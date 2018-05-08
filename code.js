@@ -7,6 +7,7 @@ async function main() {
     //const unzip = require('unzip')
     const fs = require('fs')
     const Path = require('path')
+    // const xml2js = require('xml2js')
 
     const _ = require('lodash')
     const {find} = _
@@ -176,7 +177,7 @@ async function main() {
 
         for (let segment of segments) {
             // commentState = 2 for segments with new comments
-            if (options.newOnly) {
+            if (options.excludeApproved) {
                 if (segment.commentState == 1) {
                     continue
                 }
@@ -205,9 +206,10 @@ async function main() {
         let defaultOptions = {
             timeout: 100,
             reportEvery: 1000,
-            newOnly: false,
+            excludeApproved: false,
             join: false,
-            languages: null
+            languages: null,
+            clear: false
         }
 
         options = _.assign(defaultOptions, options)
@@ -233,7 +235,7 @@ async function main() {
 
         _.remove(documents, document => document.documentDisassemblingStatus != 'success')
         
-        if (options.newOnly) {
+        if (options.excludeApproved) {
             _.remove(documents, document => document.workflowStages[0].progress == 100)
         }
 
@@ -291,18 +293,27 @@ async function main() {
             if (type == 'xliff') {
                 let js, units
 
-                if (options.newOnly) {
+                if (options.excludeApproved) {
                     js = convert.xml2js(data, {compact: true})
+                    // xml2js.parseString(data, {
+                    //     explicitArray:false
+                    // }, (err, result) => {js = result})
 
                     units = js.xliff.file.body['trans-unit']
 
                     if (!Array.isArray(units)) {
                         units = [units]
                     }
-                    _.remove(units, unit => unit.target._attributes.state != "needs-translation")
+                    _.remove(units, unit => unit._attributes.approved == "yes")
     
                     if (units.length == 0) {
                         continue
+                    }
+
+                    if (options.clear) {
+                        for (let unit of units) {
+                            unit.target._text = ""
+                        }
                     }
 
                 }
@@ -389,13 +400,12 @@ async function main() {
     }
 
     try {
-        // status = await exportDocs(project, 'xliff', null, {
-        //     newOnly: true,
-        //     join: true,
-        //     languages: ['ru']            
-        // })
+        status = await exportDocs(project, 'xliff', null, {
+            excludeApproved: true,
+            clear: true
+        })
 
-        status = await assign(project)
+        //status = await assign(project)
 
         //status = await unassignAll(project)
 
