@@ -201,13 +201,17 @@ async function main() {
         return response
     }
 
-    async function exportDocs(project, type, stageNumber, options = {
+    async function exportDocs(project, type, stageNumber, options) {
+        let defaultOptions = {
             timeout: 100,
             reportEvery: 1000,
             newOnly: false,
             join: false,
             languages: null
-        }) {
+        }
+
+        options = _.assign(defaultOptions, options)
+
         console.log(`Exporting ${type} docs for project “${project.name}”...`)
 
         let joined
@@ -391,7 +395,7 @@ async function main() {
         //     languages: ['ru']            
         // })
 
-        //status = await assign(project)
+        status = await assign(project)
 
         //status = await unassignAll(project)
 
@@ -399,7 +403,7 @@ async function main() {
         // let names = _.keys(progressesByStatus.assigned)
         // status = await nudge(names, '5ae6a466a7b4b70fd5a477e4')
 
-        status = await nudge(['Sam Huang'], '5ae6a466a7b4b70fd5a477e4')
+        // status = await nudge(['Sam Huang'], '5ae6a466a7b4b70fd5a477e4')
 
     } catch (error) {
         status = error
