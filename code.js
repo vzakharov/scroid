@@ -294,6 +294,7 @@ async function main() {
                 let js, units
 
                 if (options.excludeApproved) {
+                    // Todo: correctly process text with inline tags (placeholders)
                     js = convert.xml2js(data, {compact: true})
                     // xml2js.parseString(data, {
                     //     explicitArray:false
