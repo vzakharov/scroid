@@ -11,12 +11,12 @@ async function main() {
     const _ = require('lodash')
     const {find} = _
     
-    var settings = require('./settings.json')
-    var credentials = require('./credentials.json')
-    var translators = require('./translators.json')
-    var teams = require('./teams.json')
-    var projects = require('./projects.json')
-    var emails = require('./emails.json')
+    var settings = require('./private/settings/settings.json')
+    var credentials = require('./private/settings/credentials.json')
+    var translators = require('./private/settings/translators.json')
+    var teams = require('./private/settings/teams.json')
+    var projects = require('./private/settings/projects.json')
+    var emails = require('./private/settings/emails.json')
     
     var translatorsByName = {}
     var translatorsById = {}
@@ -217,7 +217,7 @@ async function main() {
         let joined
         let date = (new Date()).toISOString().replace(/[:-]|\..*/g, '').replace('T', '-')
 
-        let dirPath = `./exports/${project.name}.${type}/${date}`
+        let dirPath = `./private/exports/${project.name}.${type}/${date}`
 
         function ensureDirectoryExistence(_dirPath) {            
             if (fs.existsSync(_dirPath)) {
