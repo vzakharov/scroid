@@ -88,7 +88,7 @@ async function main() {
             viaFreelancersLink: false
         })
 
-        return response
+        return response.data.jobsImported[0]
     }
 
     async function nudge(names, templateID) {
@@ -147,6 +147,28 @@ async function main() {
         }
 
         return progressesByStatus
+    }
+
+    async function completeAll(project) {
+        let responses = []
+
+        for (let document of project.documents) {
+            // Todo: turn the below into a function
+            let [, documentId, targetLanguageId] = document.id.match(/(\d+)_(\d+)/)
+            let url = `/Documents/${documentId}/Targets/${targetLanguageId}/Complete`
+
+            try {
+                response = await _smartcat.post(url)    
+            } catch(error) {
+                response = error
+            }
+
+            responses.push(response)
+
+            console.log(response)
+        }        
+
+        return responses
     }
 
     async function getComments(documentId, options = {}) {
@@ -341,6 +363,10 @@ async function main() {
         return response
     }
 
+    async function invoiceAll() {
+        
+    }
+
     async function unassignAll(project) {
 
         let {documents} = project
@@ -401,10 +427,15 @@ async function main() {
     }
 
     try {
-        status = await exportDocs(project, 'xliff', null, {
-            excludeApproved: true,
-            clear: true
-        })
+
+        status = await addJob("Vladimir Zakharov", "PM", "General April", "1.25", "hours", "60", "USD")
+
+        //status = await completeAll(project)
+
+        // status = await exportDocs(project, 'xliff', null, {
+        //     excludeApproved: true,
+        //     clear: true
+        // })
 
         //status = await assign(project)
 
@@ -420,6 +451,6 @@ async function main() {
         status = error
     }
 
-    console.log(JSON.stringify(status))
+    return status
 
 }
