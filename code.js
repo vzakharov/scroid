@@ -26,18 +26,23 @@ async function main() {
         let team = teams[name]
         for (let lang in team) {
             // Todo: multiple translators per language
-            let fullName = team[lang]
-    
-            let translator = find(translators, candidate => {
-                let {firstName, lastName} = candidate
-                return [firstName, lastName].join(' ') == fullName ||
-                    [lastName, firstName].join(' ') == fullName
-            })
-    
-            if (translator) {
-                translator.fullName = fullName
-                translatorsByName[fullName] = translator
-                translatorsById[translator.id] = translator
+            let langTeam = team[lang]
+            if (typeof langTeam == 'string') {
+                langTeam = [langTeam]
+            }
+
+            for (let fullName of langTeam) {
+                let translator = find(translators, candidate => {
+                    let {firstName, lastName} = candidate
+                    return [firstName, lastName].join(' ') == fullName ||
+                        [lastName, firstName].join(' ') == fullName
+                })
+        
+                if (translator) {
+                    translator.fullName = fullName
+                    translatorsByName[fullName] = translator
+                    translatorsById[translator.id] = translator
+                }    
             }
         }
     }
@@ -111,7 +116,7 @@ async function main() {
         return  
     }
 
-    async function assign(project) {   
+    async function assignTranslators(project, options) {   
 
         let team = teams[project.team]
 
@@ -120,11 +125,23 @@ async function main() {
         }
             
         for (let document of project.documents) {
+            if (!_.includes(options.documentNames, document.name)) {
+                continue
+            }
             // Todo: multiple translators per language
-            let translator = translatorsByName[team[document.targetLanguage]]
+            let executives = team[document.targetLanguage].map(name => {
+                return {
+                    id: translatorsByName[name].id,
+                    wordsCount: 0
+                }
+            })
 
             try {
-                response = await smartcat.post(`/document/assignFreelancers?documentId=${document.id}&stageNumber=1`, [translator.id])
+                response = await smartcat.post(`/document/assign?documentId=${document.id}&stageNumber=1`, {
+                    executives,
+                    minWordsCountForExecutive: 0,
+                    assignmentMode: "distributeAmongAll"
+                })
             } catch (error) {
                 response = error.response           
             }
@@ -426,9 +443,12 @@ async function main() {
         return fullName.match(/^[^ ]+/)[0]
     }
 
+    require('./pretranslateWithJson')
+
+    
     try {
 
-        status = await addJob("Vladimir Zakharov", "PM", "General April", "1.25", "hours", "60", "USD")
+        // status = await addJob("Vladimir Zakharov", "PM", "General April", "1.25", "hours", "60", "USD")
 
         //status = await completeAll(project)
 
@@ -437,7 +457,9 @@ async function main() {
         //     clear: true
         // })
 
-        //status = await assign(project)
+        // status = await assignTranslators(project, {
+        //     documentNames: ["Publisher onboarding strings"]
+        // })
 
         //status = await unassignAll(project)
 
@@ -445,7 +467,8 @@ async function main() {
         // let names = _.keys(progressesByStatus.assigned)
         // status = await nudge(names, '5ae6a466a7b4b70fd5a477e4')
 
-        // status = await nudge(['Sam Huang'], '5ae6a466a7b4b70fd5a477e4')
+        //status = await nudge(['Philipp Wacha'], '5ac47e7d8524e50fd7fe94aa')
+
 
     } catch (error) {
         status = error
