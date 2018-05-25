@@ -1,7 +1,15 @@
+const Scroid = require('./scroid')
+
 main()
 
 async function main() {
 
+
+    let projectsByName = await Scroid.getProjectsByName()
+
+    return
+
+    
     const Axios = require('axios')
     const convert = require('xml-js')
     //const unzip = require('unzip')
@@ -72,13 +80,6 @@ async function main() {
     })
     
     
-    let project = projects[settings.project]
-    project.name = settings.project
-    
-    let response = await smartcat.get(`/project/${project.id}`)
-    Object.assign(project, response.data)
-
-    let status
 
     async function addJob(name, serviceType, jobDescription, unitsAmount, unitsType, pricePerUnit, currency) {
         let freelancerCatUserId = translatorsByName[name].id
@@ -96,17 +97,48 @@ async function main() {
         return response.data.jobsImported[0]
     }
 
-    async function nudge(names, templateID) {
+    async function _getEmail(id) {
+        response = await _smartcat.get(`/freelancers/profile/${id}`)
+        let profile = response.data
+
+        let email = profile.ownContacts.email
+        let name = profile.transliteratedFullName
+
+        emails[name] = _.assign(emails[name], {email, name})
+
+        let result = email
+
+        console.log(email + "\n" + id + "\n\n")
+
+        return result
+    } 
+
+    async function nudge(names, templateID, commonVariables) {
+        let defaultVariables = {
+            "Project name": project.name,
+            "Project ID": project.id
+        }
+
+        commonVariables = _.assign(defaultVariables, commonVariables)
+
         for (let name of names) {
-            let email = emails[name]
+
+            let contact = emails[name]
+
+            let firstName = contact.firstName
+            if (!firstName) {
+                firstName = getFirstName(name)
+            }
+
+            let variables = _.assign(commonVariables, {
+                "First name": firstName,
+            })
+
+            let {email} = contact
             let data = {
                 to: [{email, name}],
                 from: "vova@gyglio.com",
-                variables: {
-                    "First name": getFirstName(name),
-                    "Project name": project.name,
-                    "Project ID": project.id,
-                }
+                variables
             }
             //Todo: find template by name
             response = await mixmax.post(`/snippets/${templateID}/send`, data)
@@ -114,6 +146,58 @@ async function main() {
             console.log(response)
         }
         return  
+    }
+
+    async function nudgeNonresponders() {
+
+        let invitations = require('./private/settings/invitations.json')
+    
+        let names = []
+
+        for (let stage of invitations.workflowStages) {
+            for (let invitation of stage.freelancerInvitations) {
+
+                if (invitation.isAccepted || invitation.isDeclined) continue
+
+                let name = invitation.name
+                
+                let email = await _getEmail(invitation.userId)
+
+                console.log(email)
+
+                names.push(name)
+            }
+        }
+
+        // Todo: change template id to name
+        return await nudge(names, '5b03d4a8f5c8b71534540716')
+    
+    }
+
+    async function _nudgeNonstarters(documentNames) {
+
+        let names = []
+
+        for (let document of project.documents) {
+
+            if (!_.includes(documentNames, document.name)) continue
+
+            for (let stage of document.workflowStages) {
+                for (let user of stage.executives) {
+                    if (user.progress < 100) {
+                        let email = await _getEmail(user.id)
+
+                        console.log(email)
+
+                        names.push(user.name)
+                    }
+                }
+            }
+        }
+
+        // Todo: remove hardocded template id
+        await nudge(names, '5b0412572bf2e7153a5b40b1')
+
     }
 
     async function assignTranslators(project, options) {   
@@ -129,7 +213,13 @@ async function main() {
                 continue
             }
             // Todo: multiple translators per language
-            let executives = team[document.targetLanguage].map(name => {
+            let executives = team[document.targetLanguage]
+            
+            if (typeof executives == 'string') {
+                executives = [executives]
+            }
+
+            executives = executives.map(name => {
                 return {
                     id: translatorsByName[name].id,
                     wordsCount: 0
@@ -186,6 +276,45 @@ async function main() {
         }        
 
         return responses
+    }
+
+    async function _findTranslators(parameters) {
+        let users = []
+        let isNewSearchByUser = true
+        let inAssignmentMode = false
+        let limit = 50
+        let skip = 0
+
+        while(1) {
+
+            response = await _smartcat.post('/freelancers', 
+                _.assign(parameters, {
+                    limit, skip
+                }), {
+                params: {
+                    isNewSearchByUser, inAssignmentMode
+                }
+            })
+    
+            let {data} = response
+            let {results} = data
+
+            users.push(... results)
+
+            if (data.noMoreResults) break
+
+            isNewSearchByUser = false
+            skip += limit
+        }
+
+        for (let user of users) {
+            user.email = await _getEmail(user.userId)
+            let name = user.transliteratedFullName
+            user['First name'] = getFirstName(name)
+            _.assign(user, {name})
+        }
+
+        return users
     }
 
     async function getComments(documentId, options = {}) {
@@ -380,8 +509,30 @@ async function main() {
         return response
     }
 
-    async function invoiceAll() {
+    function _assignmentProgresses() {
+        let projectInfo = require('./private/settings/projectInfo.json')
         
+        let out = {}
+
+        for (let document of projectInfo.documents) {
+            
+            out[document.name] = {}
+            let _document = out[document.name]
+
+            for (let target of document.targets) {
+
+                _document[target.languageId] = {}
+                let _target = _document[target.languageId]
+                
+                for (let stage of target.workflowStages) {
+
+                    _target[stage.number] = stage.progress
+
+                }
+            }
+        }
+
+        return out
     }
 
     async function unassignAll(project) {
@@ -443,8 +594,13 @@ async function main() {
         return fullName.match(/^[^ ]+/)[0]
     }
 
-    require('./pretranslateWithJson')
+    let project = projects[settings.project]
+    project.name = settings.project
+    
+    let response = await smartcat.get(`/project/${project.id}`)
+    Object.assign(project, response.data)
 
+    let status
     
     try {
 
@@ -458,7 +614,7 @@ async function main() {
         // })
 
         // status = await assignTranslators(project, {
-        //     documentNames: ["Publisher onboarding strings"]
+        //     documentNames: ["Strings to 20 langs 180522"]
         // })
 
         //status = await unassignAll(project)
@@ -467,12 +623,35 @@ async function main() {
         // let names = _.keys(progressesByStatus.assigned)
         // status = await nudge(names, '5ae6a466a7b4b70fd5a477e4')
 
-        //status = await nudge(['Philipp Wacha'], '5ac47e7d8524e50fd7fe94aa')
+        // status = await nudge([
+        //     "Julia Tarach",
+        //     "Robert Patzold",
+        //     "Charis Argyropoulos",
+        //     "Miho Miyazaki",
+        //     "Frank Richter"
+        // ], '5b03c55be28bb20fef7e9e8e', {
+        //     "Client name": "Xsolla"
+        // })
+
+        //status = await nudgeNonresponders()
+
+        //status = await _nudgeNonstarters('Strings to 20 langs 180522')
+
+        //status = _assignmentProgresses()
+
+        // Todo: move to a separate function
+        // Todo: do via MixMax sequence API
+        let parser = require('json2csv')
+        status = await _findTranslators(require('./private/settings/search.json'))
+        let csv = parser.parse(status)
+        fs.writeFileSync('./private/tmp/searchResults.csv', csv)
 
 
     } catch (error) {
-        status = error
+        throw(error)
     }
+
+    console.log(status)
 
     return status
 

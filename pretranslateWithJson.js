@@ -65,4 +65,4 @@ function pretranslateWithJson(dirPath, srcLang = "en") {
 
 module.exports = pretranslateWithJson
 
-pretranslateWithJson("C:\\Users\\asus\\Documents\\GitHub\\translationProjects\\Xsolla\\Strings 1805\\merchant_backend_old")
+pretranslateWithJson("C:\\Users\\asus\\Documents\\GitHub\\translationProjects\\Xsolla\\Strings 1805\\direct_accounts")
