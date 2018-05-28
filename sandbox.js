@@ -63,11 +63,14 @@ async function main() {
         // scroid.user = {id: '4be24505-c078-44c4-b001-5924731ef908'}
         // await scroid._assignUnconfirmed()
     
+        let projects = await scroid.getProjects()
         let projectNames = [
+            'Strings to 20 langs 1805',
             'Sitebuilder 1805',
             'Merchant Backend 1805',
             'Direct Accounts 1805',
             'Publisher emails 1805',
+            'Login Widget',
             'Launcher FAQ 1805',
             'Doc labels 180522',
             'Guides additional 1805',
@@ -75,16 +78,17 @@ async function main() {
             'publisher-client',
             'API update 1805'
         ]
-
-        let projects = await scroid.getProjects()
         
         remove(projects, project => !projectNames.includes(project.name))
       
-        let allJobs = await scroid._getAllJobs({projects, stage: 1})
-        
+        let jobs = await scroid._getJobs({projects, stage: 1, excludeCompleted: true})
+
+        let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Progress 1805'
         let parser = require('json2csv')
-        let csv = parser.parse(allJobs, {delimiter: '\t'})
-        fs.writeFileSync('C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Progress 1805/allJobs.csv', csv)
+        for (let key in jobs) {
+            let csv = parser.parse(jobs[key], {delimiter: '\t', quote: ''})
+            fs.writeFileSync(`${path}/${key}.csv`, csv)    
+        }
     
     } catch(error) {
         throw(error)
