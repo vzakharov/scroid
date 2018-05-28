@@ -81,7 +81,7 @@ async function main() {
         
         remove(projects, project => !projectNames.includes(project.name))
       
-        let jobs = await scroid._getJobs({projects, stage: 1, excludeCompleted: true})
+        let jobs = await scroid._getJobs({projects, stage: 1})
 
         let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Progress 1805'
         let parser = require('json2csv')
