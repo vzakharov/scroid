@@ -28,6 +28,13 @@ class Scroid {
             params: {mode: 'manager', _page: 'Editor'}
         }))
 
+        this._marketplace = Axios.create({
+            baseURL: "https://marketplace.smartcat.ai/api/v1",
+            headers: {
+                Authorization: `Bearer ${credentials._marketplace}`
+            }
+        })
+
     }
 
 

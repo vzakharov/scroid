@@ -1,6 +1,6 @@
 const _ = require('lodash')
 
-const {assign, filter, reject, remove} = _
+const {assign, filter, map, reject, remove} = _
 
 const json2csv = require('json2csv')
 const readYaml = require('read-yaml')
@@ -64,26 +64,19 @@ async function main() {
         // await scroid._assignUnconfirmed()
     
         let projects = await scroid.getProjects()
-        let projectNames = [
-            'Strings to 20 langs 1805',
-            'Sitebuilder 1805',
-            'Merchant Backend 1805',
-            'Direct Accounts 1805',
-            'Publisher emails 1805',
+        let projectNames = [... map(filter(projects, project => project.name.includes('1805')), 'name'),
             'Login Widget',
-            'Launcher FAQ 1805',
-            'Doc labels 180522',
-            'Guides additional 1805',
+            'Login Widget',
             'onboarding-frontend',
             'publisher-client',
-            'API update 1805'
+            'publisher-client copywriting'
         ]
         
         remove(projects, project => !projectNames.includes(project.name))
       
-        let jobs = await scroid._getJobs({projects, stage: 1})
+        let jobs = await scroid._getJobs({projects})
 
-        let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Progress 1805'
+        let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Price 1805'
         let parser = require('json2csv')
         for (let key in jobs) {
             let csv = parser.parse(jobs[key], {delimiter: '\t', quote: ''})
