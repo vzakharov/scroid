@@ -25,7 +25,8 @@ class Scroid {
         // All functions with _ refer to the undocumented API
         this._smartcat = Axios.create(_defaults)
 
-        this._editor = function (document, {exclude}) {
+        this._editor = function (document, options = {}) {
+            let {exclude} = options
             let params = {
                 mode: 'manager', 
                 _page: 'Editor', 
