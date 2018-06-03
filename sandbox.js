@@ -1,7 +1,8 @@
 const _ = require('lodash')
 
 const {
-    assign, filter, flatten, groupBy, map, orderBy, reject, remove, sumBy, minBy
+    assign, filter, find, flatten, groupBy, 
+    map, orderBy, reject, remove, sumBy, minBy
 } = _
 
 const json2csv = require('json2csv')
@@ -16,27 +17,28 @@ async function main() {
     try {
 
 
-        // /* Confirm all non-empty segments, OR copy all sources to target & confirm */
-        // let project = await scroid.getProject('Guides additional 1806')
-        // let documents = filter(project.documents,  document =>
-        //     //document => document.name.includes('06-01') &&
-        //     minBy(document.workflowStages, 'progress').progress < 100
-        // )
+        /* Confirm all non-empty segments, OR copy all sources to target & confirm */
+        let project = await scroid.getProject('Launcher_desktop')
+        // let documents = project.documents
+        let documents = filter(project.documents,  document =>
+            //document => document.name.includes('06-01') &&
+            minBy(document.workflowStages, 'progress').progress < 100
+        )
 
         // for (let document of documents) {
         //     // await scroid._copyAllSourceToTargetAndConfirm(document)
         //     await scroid._confirmNonEmptySegments(document)
         // }
         
-        // for (let document of documents) {
-        //     await scroid._confirmNonEmptySegments(document, {stage: 1})
-        // }
+        for (let document of documents) {
+            await scroid._confirmNonEmptySegments(document, {stage: 1})
+        }
 
-        // /* Fix all purely punctuation changes and confirm */
+        /* Fix all purely punctuation changes and confirm */
 
-        // for (let document of documents) {
-        //     await scroid._fixAndConfirmPunctuationChanges(document)
-        // }
+        for (let document of documents) {
+            await scroid._fixAndConfirmPunctuationChanges(document)
+        }
 
 
         // /* Join document segments with the same localization context */
@@ -65,55 +67,58 @@ async function main() {
 
         // console.log (await scroid._heatmap())
 
-        // /* Assign myteam members to unconfirmed segments in a project, with certain document filters */
-        // let project = await scroid.getProject('Launcher_desktop')
-        // let documents = project.documents
-        // // let documents = filter(project.documents, 
-        // //     document => document.name.includes('translation-update-2018-06-01')
+        // /* Assign and email myteam members */
+
+        // let projectName = 'Strings to 20 langs 1806'
+        // let documentName = '180602'
+        // let project = await scroid.getProject(projectName)
+        // // let documents = project.documents
+        // let documents = filter(project.documents, {name: documentName})
+        // //     document => document.name.includes('180602')
         // // )
-        // let team = scroid.getTeam('default')
 
-        // // documents = documents.slice(2)
+        // // let team = await scroid.getTeam({
+        // //     template: 'default',
+        // //     includeEmails: false
+        // // })
 
-        // for (let document of documents) {
-        //     let {targetLanguage} = document
-        //     let assignee = team[targetLanguage]
-        //     let stage = 1
-        //     // await scroid._assignUnconfirmed({document, stage, assignee})
-        //     await scroid._assignDocument({
-        //         project, document, stage, 
-        //         assignees: [assignee], assignmentMode: 'rocket'
-        //     })
-        // }
+        // // // documents = documents.slice(2)
+
+        // // let assignees = []
+
+        // // for (let document of documents) {
+        // //     let {targetLanguage} = document
+        // //     let assignee = find(team, {targetLanguage})
+        // //     let stage = 1
+        // //     // await scroid._assignUnconfirmed({document, stage, assignee})
+        // //     await scroid._assignDocument({
+        // //         project, document, stage, 
+        // //         assignees: [assignee], assignmentMode: 'rocket'
+        // //     })
+        // //     assignees.push(assignee)
+        // // }
 
         // // /* Email assignees */
-        // // Todo: move all to a function
+
         // let clientName = 'Xsolla'
-        // let projectName = 'Launcher_desktop'
-        // // Todo: calculate wordcount
-        // let wordCount = '40'
-        // let deadlineString = 'next Monday, 10 am'
-        // let project = await scroid.getProject(projectName)
-        // let documents = project.documents
-        // // let documents = filter(project.documents, document => document.name.includes('2018-06-01'))
-
-        // let emails = await scroid._getEmails({project, documents, stage: 1})
-
-        // // Todo: auto-define sequenceName
-        // let sequenceName = '180601 Launcher_desktop'
+        // let emails = await scroid._getEmails({project, documents, stage: 1}, {returnHash: false})
+        // let sequenceName = `${projectName} — ${documentName}`
+        // let wordCount = documents[0].wordsCount.toString()
+        // let deadlineString = 'today (Sunday), noon'
         // let variables = {
-        //     projectName, projectId: project.id, clientName, wordCount, deadlineString
+        //     projectName, projectId: project.id, clientName, wordCount, deadlineString, documentName
         // }
 
         // await scroid.addRecipientsToSequence({sequenceName, emails, variables})
 
-        /* Send quick-translation emails to team members */
 
-        let team = await scroid.getTeam({includeEmails: true})
+        // /* Send quick-translation emails to team members */
 
-        let sequence = await scroid.getSequence('Quick translation')
+        // let team = await scroid.getTeam({includeEmails: true})
 
-        return
+        // let sequence = await scroid.getSequence('Quick translation')
+
+        // return
 
         // /* Create detailed project status report */
         // let projects = await scroid.getProjects()
