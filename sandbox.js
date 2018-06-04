@@ -17,28 +17,55 @@ async function main() {
     try {
 
 
-        /* Confirm all non-empty segments, OR copy all sources to target & confirm */
-        let project = await scroid.getProject('Launcher_desktop')
-        // let documents = project.documents
-        let documents = filter(project.documents,  document =>
-            //document => document.name.includes('06-01') &&
-            minBy(document.workflowStages, 'progress').progress < 100
-        )
+        // /* Pretranslate with a json */
+        // let project = await scroid.getProject('Xsolla.com 1806')
+        // let documentName = 'Xsolla.com strings'
+        // let path = `./private/tmp/${documentName}`
+
+        // for (let filename of fs.readdirSync(path)) {
+        //     let json = require(`${path}/${filename}`)
+
+        //     let targetLanguage = filename.match(/(.*)\.\w+$/)[1]
+        //     let document = find(project.documents, {name: documentName, targetLanguage})
+        //     let filters = scroid.createFilter({confirmed: false, stage: 1})
+        //     let segments = await scroid._getSegments(document, {filters})
+
+        //     for (let segment of segments) {
+
+        //         if (segment.targets[0].text) continue
+        //         let string = segment.localizationContext[0]
+        //         let match = string.match(/^\['(.*)'\]$/)
+        //         let id = match ? match[1] : string
+
+        //         if (json[id]) {
+        //             await scroid._editSegment(document, segment, json[id], [], {confirm: false})
+        //         }
+        //     }
+
+        // }
+
+        // /* Confirm all non-empty segments, OR copy all sources to target & confirm */
+        // let project = await scroid.getProject('Launcher_desktop')
+        // // let documents = project.documents
+        // let documents = filter(project.documents,  document =>
+        //     //document => document.name.includes('06-01') &&
+        //     minBy(document.workflowStages, 'progress').progress < 100
+        // )
 
         // for (let document of documents) {
         //     // await scroid._copyAllSourceToTargetAndConfirm(document)
         //     await scroid._confirmNonEmptySegments(document)
         // }
         
-        for (let document of documents) {
-            await scroid._confirmNonEmptySegments(document, {stage: 1})
-        }
+        // for (let document of documents) {
+        //     await scroid._confirmNonEmptySegments(document, {stage: 1})
+        // }
 
-        /* Fix all purely punctuation changes and confirm */
+        // /* Fix all purely punctuation changes and confirm */
 
-        for (let document of documents) {
-            await scroid._fixAndConfirmPunctuationChanges(document)
-        }
+        // for (let document of documents) {
+        //     await scroid._fixAndConfirmPunctuationChanges(document)
+        // }
 
 
         // /* Join document segments with the same localization context */
@@ -120,21 +147,21 @@ async function main() {
 
         // return
 
-        // /* Create detailed project status report */
-        // let projects = await scroid.getProjects()
-        // let projectNames = [
-        //     'Login Widget',
-        //     'publisher-client'
-        // ]
-        // projects = filter(projects, project => 
-        //     project.name.includes('1806') ||
-        //     projectNames.includes(project.name)
-        // )
-        // await scroid._writeReport({
-        //     projects,
-        //     path: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Report 1806', 
-        //     excludeCompleted: true
-        // })
+        /* Create detailed project status report */
+        let projects = await scroid.getProjects()
+        let projectNames = [
+            'Login Widget',
+            'publisher-client'
+        ]
+        projects = filter(projects, project => 
+            project.name.includes('1806') ||
+            projectNames.includes(project.name)
+        )
+        await scroid._writeReport({
+            projects,
+            path: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Report 1806', 
+            excludeCompleted: true
+        })
     
     } catch(error) {
         throw(error)

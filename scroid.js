@@ -1,4 +1,5 @@
 const Axios = require('axios')
+const Smartcat = require('smartcat')
 const fs = require('fs')
 
 const _ = require('lodash')
@@ -10,10 +11,12 @@ class Scroid {
 
         assign (this, {credentials})
 
-        this.smartcat = Axios.create({
-            baseURL: 'https://smartcat.ai/api/integration/v1/',
-            auth: credentials.smartcat
-        })
+        // this.smartcat = Axios.create({
+        //     baseURL: 'https://smartcat.ai/api/integration/v1/',
+        //     auth: credentials.smartcat
+        // })
+
+        this.smartcat = new Smartcat(credentials.smartcat).methods
         
         let _defaults = {
             baseURL: "https://smartcat.ai/api/",
@@ -56,7 +59,27 @@ class Scroid {
     }
 
 
+    async getProjects(params) {
 
+        let decomposeDocumentId = compositeId => {
+            let [documentId, targetLanguageId] = compositeId.match(/(\d+)_(\d+)/).slice(1)
+            return {documentId, targetLanguageId}
+        }
+
+        // let projects = (
+        //     await this.smartcat.get('project/list', {params})
+        // ).data
+        let projects = await this.smartcat.project.list()
+    
+        for (let project of projects) {
+            for (let document of project.documents) {
+                Object.assign(document, decomposeDocumentId(document.id))
+            }
+        }
+    
+        return projects
+    
+    }
 
 
 }
