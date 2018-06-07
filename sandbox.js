@@ -1,12 +1,15 @@
 const _ = require('lodash')
 
 const {
-    assign, filter, find, flatten, groupBy, 
-    map, orderBy, reject, remove, sumBy, minBy
+    assign, filter, find, flatten, groupBy, keyBy,
+    map, pick, orderBy, reject, remove, sumBy, minBy,
+    uniqBy
 } = _
 
 const json2csv = require('json2csv')
 const fs = require('fs')
+
+main()
 
 async function main() {
 
@@ -16,51 +19,64 @@ async function main() {
 
     try {
 
+        let projectName = 'User Account autoloc'
+        let project = await scroid.getProject(projectName)
+        // let documents = project.documents
+        let documents = filter(project.documents, document => document.name.includes('319'))
 
-        // /* Pretranslate with a json */
-        // let project = await scroid.getProject('Xsolla.com 1806')
-        // let documentName = 'Xsolla.com strings'
-        // let path = `./private/tmp/${documentName}`
+        // // /* Replace newlines with tags */
+
+        // // for (let document of project.documents) {
+        // //     await scroid.convertDocumentNewlinesToTags(document)
+        // // }
+
+        // /* Load all yamls into one object and pretranslate a document with it*/
+        // let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Docs 1806/translations/'
+        // let object = scroid.loadYmls(path)
+
+
+        // let documentNames = []
+        // for (let document of documents) {
+        //     await scroid.pretranslateWith_(document, object, {
+        //         contextFormat: 'yaml',
+        //         parseFilenames: true,
+        //         withLanguagePrefix: true,
+        //         convertNewLinesToTags: true,
+        //         confirm: true,
+        //         editIfNonEmpty: true,
+        //         documentNames
+        //     })
+        // }
+
+        // /* Create jsons out of ymls */
+        // scroid.createJsonsFromYmls('C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Docs 1806/en')
+
+        // /* Rename yaml to yml */
+        // scroid.renameYamlsToYmls('C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Docs 1806')
+
+        // // /* Pretranslate with a js object */
+        // let projectName = 'publisher-client alignment'
+        // let documentName = 'en'
+        // let project = await scroid.getProject(projectName)
+        // let path = `./private/tmp/${projectName}/${documentName}`
 
         // for (let filename of fs.readdirSync(path)) {
         //     let json = require(`${path}/${filename}`)
 
         //     let targetLanguage = filename.match(/(.*)\.\w+$/)[1]
         //     let document = find(project.documents, {name: documentName, targetLanguage})
-        //     let filters = scroid.createFilter({confirmed: false, stage: 1})
-        //     let segments = await scroid._getSegments(document, {filters})
 
-        //     for (let segment of segments) {
-
-        //         if (segment.targets[0].text) continue
-        //         let string = segment.localizationContext[0]
-        //         let match = string.match(/^\['(.*)'\]$/)
-        //         let id = match ? match[1] : string
-
-        //         if (json[id]) {
-        //             await scroid._editSegment(document, segment, json[id], [], {confirm: false})
-        //         }
-        //     }
+        //     scroid.pretranslateWith_(document, json, {contextFormat: 'json'})
 
         // }
 
         // /* Confirm all non-empty segments, OR copy all sources to target & confirm */
-        // let project = await scroid.getProject('Launcher_desktop')
-        // // let documents = project.documents
-        // let documents = filter(project.documents,  document =>
-        //     //document => document.name.includes('06-01') &&
-        //     minBy(document.workflowStages, 'progress').progress < 100
-        // )
 
         // for (let document of documents) {
         //     // await scroid._copyAllSourceToTargetAndConfirm(document)
-        //     await scroid._confirmNonEmptySegments(document)
+        //     await scroid.confirmNonEmptySegments_(document)
         // }
         
-        // for (let document of documents) {
-        //     await scroid._confirmNonEmptySegments(document, {stage: 1})
-        // }
-
         // /* Fix all purely punctuation changes and confirm */
 
         // for (let document of documents) {
@@ -70,8 +86,8 @@ async function main() {
 
         // /* Join document segments with the same localization context */
 
-        // let project = await scroid.getProject('Publisher emails 1805')
-        // await scroid._joinByContext(project.documents)
+        // let project = await scroid.getProject('Docs 1806')
+        // await scroid.joinByContext_(project.documents, {onlyJoinIfNotAllConfirmed: true})
 
 
         /* Load payables, filter them, and create an invoice */
@@ -94,46 +110,75 @@ async function main() {
 
         // console.log (await scroid._heatmap())
 
-        // /* Assign and email myteam members */
-
-        // let projectName = 'Strings to 20 langs 1806'
-        // let documentName = '180602'
+        // /* Export multilingual doc as a TSV file */
+        // let filename = `${process.cwd()}/private/tmp/translation.tsv`
+        // let projectName = 'Life is Feudal 1806'
+        // let documentName = 'LiF 180605'
         // let project = await scroid.getProject(projectName)
         // // let documents = project.documents
-        // let documents = filter(project.documents, {name: documentName})
-        // //     document => document.name.includes('180602')
-        // // )
+        // let documents = filter(project.documents, 
+        //     document => document.name.includes(documentName)
+        // )
+        // let document = documents[0]
 
-        // // let team = await scroid.getTeam({
-        // //     template: 'default',
-        // //     includeEmails: false
-        // // })
+        // let languageNames = {}
+        // for (let document of documents) {
+        //     languageNames[document.targetLanguageId] = document.targetLanguage
+        // }
 
-        // // // documents = documents.slice(2)
+        // let segments = await scroid.getSegments_(document, {multilingual: true})
 
-        // // let assignees = []
+        // let data = []
 
-        // // for (let document of documents) {
-        // //     let {targetLanguage} = document
-        // //     let assignee = find(team, {targetLanguage})
-        // //     let stage = 1
-        // //     // await scroid._assignUnconfirmed({document, stage, assignee})
-        // //     await scroid._assignDocument({
-        // //         project, document, stage, 
-        // //         assignees: [assignee], assignmentMode: 'rocket'
-        // //     })
-        // //     assignees.push(assignee)
-        // // }
+        // for (let segment of segments) {
+        //     let item = {}
+        //     item[document.sourceLanguage] = segment.source.text
 
-        // // /* Email assignees */
+        //     for (let target of segment.targets) {
+        //         let languageName = languageNames[target.languageId]
+        //         item[languageName] = target.text
+        //     }
+        //     data.push(item)
+        // }
+
+        // let tsv = json2csv.parse(data, {delimiter: '\t'})
+
+        // fs.writeFileSync(filename, tsv)
+
+
+        // /* Assign myteam members */
+
+        // let team = await scroid.getTeam({
+        //     template: 'default',
+        //     includeEmails: false
+        // })
+
+        // // documents = documents.slice(2)
+
+        // let assignees = []
+
+        // for (let document of documents) {
+        //     let {targetLanguage} = document
+        //     let assignee = find(team, {targetLanguage})
+        //     let stage = 1
+        //     // await scroid._assignUnconfirmed({document, stage, assignee})
+        //     await scroid.assignDocument_({
+        //         project, document, stage, 
+        //         assignees: [assignee], assignmentMode: 'rocket'
+        //     })
+        //     assignees.push(assignee)
+        // }
+
+        // /* Email assignees */
 
         // let clientName = 'Xsolla'
         // let emails = await scroid._getEmails({project, documents, stage: 1}, {returnHash: false})
-        // let sequenceName = `${projectName} — ${documentName}`
+        // let documentNameForMixmax = 'login-319'
+        // let sequenceName = `${projectName} — ${documentNameForMixmax}`
         // let wordCount = documents[0].wordsCount.toString()
-        // let deadlineString = 'today (Sunday), noon'
+        // let deadlineString = 'tomorrow (Friday), noon'
         // let variables = {
-        //     projectName, projectId: project.id, clientName, wordCount, deadlineString, documentName
+        //     projectName, projectId: project.id, clientName, wordCount, deadlineString, documentNameForMixmax
         // }
 
         // await scroid.addRecipientsToSequence({sequenceName, emails, variables})
@@ -147,21 +192,21 @@ async function main() {
 
         // return
 
-        /* Create detailed project status report */
-        let projects = await scroid.getProjects()
-        let projectNames = [
-            'Login Widget',
-            'publisher-client'
-        ]
-        projects = filter(projects, project => 
-            project.name.includes('1806') ||
-            projectNames.includes(project.name)
-        )
-        await scroid._writeReport({
-            projects,
-            path: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Report 1806', 
-            excludeCompleted: true
-        })
+        // /* Create detailed project status report */
+        // let projects = await scroid.getProjects()
+        // let projectNames = [
+        //     'Login Widget',
+        //     'publisher-client'
+        // ]
+        // projects = filter(projects, project => 
+        //     project.name.includes('1806') ||
+        //     projectNames.includes(project.name)
+        // )
+        // await scroid._writeReport({
+        //     projects,
+        //     path: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Report 1806', 
+        //     excludeCompleted: true
+        // })
     
     } catch(error) {
         throw(error)
@@ -170,5 +215,3 @@ async function main() {
     return
 
 }
-
-main()
