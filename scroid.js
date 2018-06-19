@@ -1,68 +1,140 @@
 const Axios = require('axios')
-const Smartcat = require('smartcat')
+const Smartcat = require('smartcat-api')
 const _Smartcat = require('smartcat-ud')
 const fs = require('fs')
 const readYaml = require('read-yaml')
+const writeYaml = require('write-yaml')
 
 const _ = require('lodash')
 
 const {
     assign, capitalize, clone, filter, find, includes, 
-    isArray, isEqual, keyBy, keys, map, pick, remove
+    isArray, isEqual, keyBy, keys, map, omit, pick, remove
 } = _
+
+const {
+    sleep, getDeep, iterate, setDeep
+} = require('vz-utils')
+
+const pluralize = require('pluralize')
+
+const domainByServer = {
+    eu: '',
+    us: 'us.',
+    ea: 'ea.'
+}
+
+const serverSessionSuffix = {
+    eu: 'ru', us: 'us', ea: 'ea'
+}
+
 
 class Scroid {
 
-    constructor(credentials) {
+    load(what) { 
+        let value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
+        this[what] = value
+        return value 
+    }
 
-        assign (this, {credentials})
-
-        // this.smartcat = Axios.create({
-        //     baseURL: 'https://smartcat.ai/api/integration/v1/',
-        //     auth: credentials.smartcat
-        // })
-
-        this.smartcat = new Smartcat(credentials.smartcat).methods
-
-        /* All functions with _ refer to the undocumented API */
-        let _defaults = {
-            baseURL: "https://smartcat.ai/api/",
-            headers: {
-                Cookie: credentials._smartcat
-            }
+    save(hash) {
+        for (let key in hash) {
+            writeYaml.sync(`${this.storageFolder}/${key}.yaml`, hash[key])
         }
-        this.__smartcat = Axios.create(_defaults)
-        this._smartcat = new _Smartcat(credentials._smartcat).methods
+    }
+    
+    constructor(username) {
 
-        this._editor = function (document, options = {}) {
-            let {exclude} = options
-            let params = {
-                mode: 'manager', 
-                _page: 'Editor', 
-                documentId: document.documentId, 
-                languageIds: document.targetLanguageId
-            }
-            if (exclude) {
-                for (let what of exclude) {
-                    delete params[what]
-                }
-            }
-            return Axios.create(assign(_defaults, {params}))
-        }
-
-        this._marketplace = Axios.create({
-            baseURL: "https://marketplace.smartcat.ai/api/v1",
-            headers: {
-                Authorization: `Bearer ${credentials._marketplace}`
-            }
+        assign(this, {
+            username,
+            storageFolder: `./private/userStorage/${username}`
         })
 
+        this.load('credentials')
+
+        let {apiToken} = this.credentials.mixmax
         this.mixmax = Axios.create({
             baseURL: 'https://api.mixmax.com/v1/',
-            params: {'apiToken': credentials.mixmax}
+            params: {apiToken}
         })
 
     }
+
+    /* Iterators */
+
+    async iterateSome({kind, filter, options, asyncCallback, getAll}) {
+
+        if (!filter) filter = () => true
+
+        let allItems = await getAll();
+        let items = _.filter(allItems, filter)
+        console.log(`${capitalize(kind)}(s): ${map(items, 'name').join(', ')}`)
+
+        for (let item of items) {
+            console.log(`Handling ${kind} ${item.name} (id ${item.id})...`)
+            let itemArgs = {}
+            itemArgs[kind] = item
+            itemArgs[pluralize(kind)] = items
+            await asyncCallback(assign(options, itemArgs))
+        }
+    }
+
+    /** callback: async {project} => ... */
+    async iterateProjects({projectFilter, multilingual}, asyncCallback) {
+        let getAll = isEqual(keys(projectFilter), ['name']) ?
+            async () => [await this.getProject(projectFilter.name)] :
+            async () => await this.getProjects()
+        await this.iterateSome({
+            kind: 'project',
+            filter: projectFilter,
+            options: {multilingual},
+            asyncCallback,
+            getAll
+        })
+    }
+
+    /** callback: async ({document, project}) => ... */
+    async iterateDocuments({projectFilter, documentFilter, multilingual}, asyncCallback) {
+
+        await this.iterateProjects({projectFilter, multilingual}, async ({project}) => {
+
+            await this.iterateSome({
+                kind: 'document',
+                filter: documentFilter,
+                options: {multilingual, project},
+                asyncCallback,
+                getAll: () => project.documents
+            })
+
+        })
+
+    }
+
+
+    /** Callback: async ({target, segment, segments, document, documents, project, projects}) => ...
+     */
+    async iterateSegmentTargets({projectFilter, documentFilter, segmentFilter, multilingual}, callback) {
+
+        await this.iterateDocuments(
+            {projectFilter, documentFilter, multilingual}, 
+            async ({document, project}) => {
+
+                let filters = segmentFilter && this.createFilter(segmentFilter)
+
+                let segments = await this.getSegments_(document, {filters, multilingual})
+
+                segments.forEach(async segment => segment.targets.forEach(async target => {
+                    await callback({
+                        target, segment, segments, document, documents, project, projects
+                    })
+                }))
+
+            }
+        )
+
+    }
+
+    /* */
 
 
     async assignDocument_(options) {
@@ -120,6 +192,56 @@ class Scroid {
     
     }
 
+    async assignPinnedFreelancers(options) {
+
+        let {stageNumber} = assign({
+            stageNumber: 1
+        }, options)
+
+        let documentsByLanguageAndProjectName = await this.getDocumentsByLanguageAndProjectName(options)
+
+        await iterate(documentsByLanguageAndProjectName, 2, async (documents) => {
+            let documentIds = map(documents, 'id')
+            try {
+                await this.smartcat.document.assignFromMyTeam(documentIds, stageNumber)
+            } catch (error) {
+                let {project, targetLanguageId} = documents[0]
+                let projectId = project.id
+                documentIds = map(documents, 'documentId')
+                let {response} = error
+                if (response && response.status == 500) {
+                    let assignmentId = await this._smartcat.workflowAssignments.start({documentIds, projectId, targetLanguageId})
+                    let assignment = await this._smartcat.workflowAssignments.get(assignmentId)
+
+                    let stage = find(assignment.workflowStages, {id: stageNumber.toString()})
+
+                    let {freelancerInvitations} = stage
+                    let invitation = find(freelancerInvitations, {isAccepted: true})
+                    
+                    console.log(`Assigning ${invitation.name}...`)
+
+                    let assignmentOptions = {
+                        addedAssignedUserIds: [invitation.userId],
+                        deadline: null,
+                        removedAssignedUserIds: [],
+                        removedInvitedUserIds: [],
+                        saveDeadline: true,
+                        stageSelector: stageNumber
+                    }
+
+                    await this._smartcat.workflowAssignments.save(assignmentId, assignmentOptions)
+                    
+                    // post(`WorkflowAssignments/${assignmentId}/SaveAssignments`, 
+                    // data, {params: {
+                    //     stageSelector: stageNumber
+                    // }})
+                }
+            }
+        })
+
+
+    }
+
     async confirmNonEmptySegments_(document, options = {}) {
 
         let {documentId} = document
@@ -166,7 +288,7 @@ class Scroid {
         // }
     }
 
-    createFilter({confirmed, stage, changed}) {
+    createFilter({confirmed, stage, changed} = {}) {
         let filters = []
         
         if (confirmed != undefined) {
@@ -185,6 +307,31 @@ class Scroid {
         return filters
     }
 
+    async createProject(path, settings) {
+        let file = {
+            content: fs.readFileSync(path),
+            name: path.match(/[^/\\]+$/)[0]
+        }
+
+        if (settings.clientName) {
+            settings.clientId = await this.getClientId(settings.clientName)
+        }
+
+        if (!settings.name) {
+            settings.name = file.name
+        }
+
+        if (settings.excludeExtension) {
+            settings.name = settings.name.replace(/\.[^.]*$/, '')
+        }
+
+        if (settings.includeDate) {
+            settings.name += ' ' + (new Date().toISOString()).replace(/^\d\d(\d+)-(\d+)-(\d+).*/, '$1$2$3')
+        }
+
+        return await this.smartcat.project.create(file, settings)
+    }
+
     async downloadMyTeam() {
         let myTeam = []
         let limit = 500
@@ -201,15 +348,17 @@ class Scroid {
         return myTeam
     }
 
-    async editSegment_(document, segment, {confirm} = {confirm: true}) {
+    async editSegment_(document, segment, {confirm, languages} = {confirm: true}) {
 
         let editor = this._editor(document, {exclude: ['languageIds']})
         //assign(editor.defaults.params, {languageId})
     
-        console.log(`Handling segment ${segment.number} (${segment.localizationContext[0]}) in ${document.name}: \n\t${segment.source.text}...`)
+        console.log(`Handling segment ${segment.number} (${segment.localizationContext[0]}) in ${document.name}: \n\t${segment.source.text}`)
         for (let target of segment.targets) {
 
             let {text, tags, languageId, language} = target
+
+            if (languages && !languages.includes(language)) continue
 
             let languageText = `${language} → ${text}`
 
@@ -248,6 +397,110 @@ class Scroid {
         }    
     }
 
+    async getClientId(name) {
+        return find(
+            await this._smartcat.clients(),
+            {name}
+        ).id
+    }
+
+    /** identifier: {name, userId} */
+    async getEmail(idHash) {
+
+        if (!this.emails) this.load('emails')
+        let {emails} = this
+        let email
+
+        for (let key in idHash) {
+            let id = idHash[key]
+            console.log(`Looking up email for ${key} = ${id}...`)
+            let emailsByKey = emails.by[key]
+            if (!emailsByKey) continue
+            email = emailsByKey[id]
+            if (email) break
+        }
+    
+        if (!email) {
+            console.log('Nothing stored locally, requesting via API...')
+            let profile = (
+                await this.__smartcat.get(`freelancers/profile/${idHash.userId}`)
+            ).data
+    
+            email = profile.myTeamContacts && profile.myTeamContacts.email || profile.ownContacts.email
+
+            for (let key in idHash) {
+                setDeep(emails.by, [key, idHash[key]], email)
+            }
+        }
+    
+        this.save({emails})
+
+        console.log(`\tDone: ${email}.`)
+
+        return email
+    
+    }
+
+    async getEmails({project, documents, stage, assignees}, {returnHash, modifyAssignees} = {}) {
+
+        let emails = returnHash ? {} : []
+        // let userIds = []
+    
+        if (!assignees) {
+    
+            assignees = []
+    
+            for (let document of documents) {
+    
+                console.log(`Looking up assignees for ${document.name} (${document.targetLanguage})...`)
+                let {assignment} = await this._getAssignment(project, document)
+        
+                let stageAssignment = find(
+                    assignment.workflowStages, {id: stage.toString()}
+                )
+        
+                let documentAssignees = flatten([
+                    stageAssignment.documentStages[0].executives,
+                    filter(stageAssignment.freelancerInvitations, {inAutoAssignment: true})
+                ])
+    
+                console.log(`\tFound: ${map(documentAssignees, 'name').join(', ')}.`)
+    
+                assignees.push(... documentAssignees)
+        
+        
+            }
+    
+            assignees = uniqBy(assignees, 'userId')
+    
+        }
+    
+        if (!isArray(assignees)) {
+            assignees = values(assignees)
+        }
+    
+        for (let assignee of assignees) {
+    
+            let {userId, name} = assignee
+        
+            let email = await this.getEmail({name, userId})
+    
+            if (returnHash) {
+                emails[name] = email
+            } else {
+                emails.push({name, userId, email})
+            }
+    
+            if (modifyAssignees) {
+                assign(assignee, {email})
+            }
+    
+        }
+    
+        return emails
+    
+    }
+
     async getFilterSetId(document, {filters, multilingual} = {}) {
 
         let {targetLanguageId, documentId} = document
@@ -271,6 +524,66 @@ class Scroid {
         return filterSetId
     }
 
+    async getDocuments(options) {
+
+        let documents = []
+
+        await this.iterateDocuments(options, ({document}) => documents.push(document))
+
+        return documents
+
+    }
+
+    async getAssignees(options) {
+        let assignees = []
+
+        await this.iterateDocuments(options, async ({document, project}) => {
+            for (let stage of document.workflowStages) {
+                for (let executive of stage.executives) {
+                    let {userId, progress} = executive
+                    assignees.push(assign(executive, options.report({project, document})))
+                }
+            }
+        })
+
+        return assignees
+
+    } 
+
+    async getProductivityData(options) {
+
+        let getTmFactor = ({matchPercentage, saveType}) => 
+            saveType == 6 ? 0 :
+            matchPercentage > 99 ? 0 :
+            matchPercentage >= 95 ? 0.1 :
+            matchPercentage >= 85 ? 0.4 :
+            matchPercentage >= 75 ? 0.7 :
+            1
+        
+        let data = []
+
+        await this.iterateSegmentTargets(options, async ({target, segment, project, document}) => {
+            let {matchPercentage, language} = target
+            let revision = find(reverse(target.revisions), revision => revision.userName)
+            if (!revision) return
+            let {userName, saveType} = revision
+            let {wordsCount, number} = segment
+            let tmFactor = getTmFactor({matchPercentage, saveType})
+            let createdAt = revision.creationDate
+            let date = createdAt.match(/^\d+-\d+-\d+/)[0]
+            let dateAndHour  = createdAt.match(/^\d+-\d+-\d+\w\d+/)[0]
+            let hour = createdAt.match(/(?<=T)\d+/)[0]
+            let effectiveWordsCount = tmFactor * wordsCount
+            data.push({
+                project: project.name, document: document.name, language, 
+                createdAt, date, hour,
+                userName, segmentNumber: segment.number, 
+                saveType, wordsCount, matchPercentage, tmFactor, effectiveWordsCount
+            })
+            console.log(stringify(last(data)))
+        })
+    }
+
     async getProject(projectName) {
 
         let projects = (
@@ -288,11 +601,8 @@ class Scroid {
             return {documentId, targetLanguageId}
         }
 
-        // let projects = (
-        //     await this.smartcat.get('project/list', {params})
-        // ).data
         let projects = await this.smartcat.project.list(params)
-    
+        
         for (let project of projects) {
             project.targetLanguagesById = {}
             for (let document of project.documents) {
@@ -359,41 +669,82 @@ class Scroid {
         
     }
 
-    async getTeam(options) {
+    async getSegmentsByContext(document, regexp) {
+        let segments = await this.getSegments_(document, {multilingual: true}) 
+        let out = []
 
-        let {template, includeEmails} = assign({
-            template: 'default',
-            includeEmails: false
-        }, options)
-    
-        let teams = readYaml.sync(`${process.cwd()}/private/settings/teams.yml`)
-        let templateTeam = teams[template]
-        let team = []
+        for (let segment of segments) {
+            let context = segment.localizationContext[0]
+            if (context.match(regexp)) {
+                out.push(segment)
+            }
+        }
+
+        return out
+    }
+
+    async getSegmentsWithTargetSameAsSource(document) {
+
+        let segments = await this.getSegments_(document, {multilingual: true}) 
+        let out = []
+
+        for (let segment of segments) {
+            for (let target of segment.targets) {
+                if (segment.source.text == target.text) {
+                    out.push(segment)
+                    break
+                }
+            }
+        }
+
+        return out
+
+    }
+
+    async getDocumentsByLanguageAndProjectName(options) {
+
+        let documentsByLanguageAndProject = {}
+
+        await this.iterateDocuments(options, ({document, project}) => {
+            let documents = getDeep(documentsByLanguageAndProject, [document.targetLanguage, project.name], [])
+            documents.push(document)
+        })
+
+        return documentsByLanguageAndProject
+    }
+
+    async getTeam(teamTemplate, {includeEmails} = {}) {
+
+        let assigneesByLanguage = {}
+        let assignees = []
         let smartcatTeam = await this.downloadMyTeam()
     
-        for (let languageKey in templateTeam) {
-            let name = templateTeam[languageKey]
-            let member = find(smartcatTeam, member => `${member.firstName} ${member.lastName}` == name)
-            assign(member, {name})
-            if (member.id) this.renameKeys(member, {id: 'userId'})
-    
+        for (let languageKey in teamTemplate) {
             let languages = languageKey.split(',')
-    
-            for (let targetLanguage of languages) {
-                if (languages.length > 0) {
-                    member = clone(member)
+
+            let names = teamTemplate[languageKey]
+            if (!isArray(names)) names = [names]
+            for (let name of names) {
+                let assignee = find(smartcatTeam, assignee => `${assignee.firstName} ${assignee.lastName}` == name)
+                
+                if (!assignees.includes(assignee)) {
+                    assignees.push(assignee)
+                    assign(assignee, {name})
+                    if (assignee.id) this.renameKeys(assignee, {id: 'userId'})
                 }
-                assign(member, {targetLanguage})
-                team.push(member)
+
+                for (let targetLanguage of languages) {
+                    getDeep(assigneesByLanguage, [targetLanguage], []).push(assignee)
+                }
             }
-    
+
         }
     
         if (includeEmails) {
-            await this._getEmails({assignees: team})
+            await this.getEmails({assignees}, {modifyAssignees: true})
         }
     
-        return team
+        return assigneesByLanguage
     
     }
 
@@ -504,10 +855,16 @@ class Scroid {
         }
     }
 
-    async pretranslateWith_(document, object, {
-        contextFormat, parseFilenames, withLanguagePrefix, convertNewLinesToTags, 
-        confirm, documentNames, editIfNonEmpty
-    } = {documentNames: []}) {
+    /** Options: {
+            contextFormat, parseFilenames, convertNewLinesToTags, 
+            confirm, documentNames, editIfNonEmpty
+        } */
+    async pretranslateWith_(document, object, options) {
+
+        let {
+            contextFormat, parseFilenames, convertNewLinesToTags, 
+            confirm, documentNames, editIfNonEmpty
+        } = assign({documentNames: []}, options)
 
         if (documentNames.includes(document.name)) return
         documentNames.push(document.name)
@@ -557,7 +914,7 @@ class Scroid {
                 if (contextFormat == 'json') {
                     let match = string.match(/^\['(.*)'\]$/)
                     id = match ? match[1] : string
-                    text = object[id]
+                    text = object[id][language]
                 }
                 
                 if (contextFormat == 'yaml') {
@@ -594,9 +951,64 @@ class Scroid {
                 continue
             }
 
-            await scroid.editSegment_(document, segment, {confirm})
+            let tryEdit = async () => {
+                try {
+                    await scroid.editSegment_(document, segment, {confirm})
+                } catch(error) {
+                    console.log(error)
+                    await sleep(2000)
+                    process.nextTick(tryEdit)
+                }
+            }
+
+            await tryEdit()
 
         }
+    }
+
+    setSmartcatAccount(accountName) {
+        let smartcatCredentials = this.credentials.smartcat
+
+        if (!accountName) accountName = smartcatCredentials.defaultAccount
+
+        let {auth, server} = smartcatCredentials.accounts[accountName]
+        let subDomain = domainByServer[server]
+
+        this.smartcat = new Smartcat({auth, subDomain}).methods
+        
+        let session = smartcatCredentials.sessionsByServer[server]
+        let cookie = `session-${serverSessionSuffix[server]}=${session}`
+
+        let _defaults = {
+            baseURL: `https://${subDomain}smartcat.ai/api/`,
+            headers: {cookie}
+        }
+
+        this.__smartcat = Axios.create(_defaults)
+        this._smartcat = new _Smartcat({cookie, subDomain}).methods
+
+        this._editor = function (document, options = {}) {
+            let {exclude} = options
+            let params = {
+                mode: 'manager', 
+                _page: 'Editor', 
+                documentId: document.documentId, 
+                languageIds: document.targetLanguageId
+            }
+            if (exclude) {
+                for (let what of exclude) {
+                    delete params[what]
+                }
+            }
+            return Axios.create(assign(_defaults, {params}))
+        }
+
+        this._marketplace = Axios.create({
+            baseURL: `https://${subDomain}marketplace.smartcat.ai/api/v1`,
+            headers: {
+                authorization: `Bearer ${smartcatCredentials.marketplaceTokensByServer[server]}`
+            }
+        })
     }
 
     convertToTagsInTarget(target, regex = /[\n\t]/) {
@@ -639,79 +1051,9 @@ class Scroid {
 
     }
 
-    /* Operations with files */
-
-    handleFilesRecursively(path, handler, {mask} = {}) {
-        for (let filename of fs.readdirSync(path)) {
-            let fullPath = `${path}/${filename}`
-            let stats = fs.statSync(fullPath)
-
-            if (stats.isDirectory(fullPath)) {
-                console.log(`Directory: ${fullPath}`)
-                this.handleFilesRecursively(fullPath, handler, {mask})
-            } else {
-                let match = fullPath.match(/([^/\\]+)\.([^.]*)$/)
-                if (!match) {
-                    continue
-                }
-                let [, filename, extension] = match
-                if (mask) {
-                    if (!fullPath.match(mask)) {                        
-                        console.log(`Skipping ${fullPath} (mask not matched).`)
-                        continue
-                    }
-                }
-                console.log(`Handling ${fullPath}...`)
-                handler(fullPath, {filename, extension})
-            }
-        }
-    }
-
-    createJsonsFromYmls(path) {
-        let mask = /\.ya?ml$/
-        this.handleFilesRecursively(path, (path) => {
-            let js = this.readYaml(path)
-            let jsonFilename = path.replace(mask, '.json')
-            fs.writeFileSync(jsonFilename, JSON.stringify(js, null, 4))
-        }, {mask})
-
-        return
-    }
-
-    loadYmls(path) {
-        let out = {}
-        this.handleFilesRecursively(path, (path, {filename}) => {
-            out[filename] = {}
-            assign(out[filename], this.readYaml(path))
-        }, {mask: /\.ya?ml$/})
-        return out
-    }
-
-    readYaml(path) {
-        console.log(`Reading ${path}...`)
-        try {
-            return readYaml.sync(path)
-        } catch (error) {
-            console.log(`Caught an error while loading:`)
-            console.log(error)
-            console.log(`Trying with less trict options...`)
-            return readYaml.sync(path, {json: true})
-        } finally {
-            console.log('... Done.')
-        }
-    }
-
-    renameRecursively(path, mask, renameTo) {
-        this.handleFilesRecursively(path, (path) => {
-            if (path.match(mask)) {
-                let newPath = path.replace(mask, renameTo)
-                fs.renameSync(path, newPath)
-                console.log(`Renamed ${path} to ${newPath}`)
-            }
-        }, {mask})
-    }
-
 }
+
+
 
 for (let fileName of fs.readdirSync('./lib/properties')) {
 
