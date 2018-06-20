@@ -9,7 +9,8 @@ const _ = require('lodash')
 
 const {
     assign, capitalize, clone, filter, find, includes, 
-    isArray, isEqual, keyBy, keys, map, omit, pick, remove
+    isArray, isEqual, keyBy, keys, map, omit, pick, remove,
+    uniqBy
 } = _
 
 const {
@@ -30,6 +31,33 @@ const serverSessionSuffix = {
 
 
 class Scroid {
+
+    link({project, document, targetLanguageId}) {
+        let domain = `https://${this.subDomain}smartcat.ai`
+        let url, text
+        if (project) {
+            url = `${domain}/project/${project.id}`
+            text = project.name
+        } else if (document) {
+            if (targetLanguageId) {
+                url = `${domain}/editor?documentId=${document.documentId}&languageId=${targetLanguageId}`                
+                text = `${document.name} (${document.targetLanguage})`
+            } else {
+                url = `${domain}/grid-editor?documentId=${document.documentId}`
+                text = document.name
+            }
+        }
+
+        return {url, text}
+
+    }
+
+    googleSheetLink(args) {
+        let link = this.link(args)
+        return `=HYPERLINK("${link.url}", "${link.text}")`
+    }
+
+
 
     load(what) { 
         let value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
@@ -103,31 +131,66 @@ class Scroid {
                 filter: documentFilter,
                 options: {multilingual, project},
                 asyncCallback,
-                getAll: () => project.documents
+                getAll: () => {
+                    let {documents} = project
+                    
+                    if (multilingual) {
+
+                        documents = uniqBy(documents, 'documentId')
+                        for (let document of documents) {
+                            for (let property of [
+                                'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
+                            ]) {
+                                delete document[property]
+                            }
+                        }
+                        
+
+                    }
+
+                    return documents
+                }
             })
 
         })
 
     }
 
+    async iterateSegments(options, callback) {
 
-    /** Callback: async ({target, segment, segments, document, documents, project, projects}) => ...
-     */
-    async iterateSegmentTargets({projectFilter, documentFilter, segmentFilter, multilingual}, callback) {
+        let {segmentFilter, multilingual} = options
 
-        await this.iterateDocuments(
-            {projectFilter, documentFilter, multilingual}, 
-            async ({document, project}) => {
+        await this.iterateDocuments(options, 
+            async iteratees => {
+
+                let {document} = iteratees
 
                 let filters = segmentFilter && this.createFilter(segmentFilter)
 
                 let segments = await this.getSegments_(document, {filters, multilingual})
 
-                segments.forEach(async segment => segment.targets.forEach(async target => {
-                    await callback({
-                        target, segment, segments, document, documents, project, projects
-                    })
-                }))
+                for (let segment of segments) {
+                    await callback(assign(iteratees, {segment, segments}))
+                }
+
+            }
+        )
+
+    }
+
+    /** Callback: async ({target, segment, segments, document, documents, project, projects}) => ...
+     */
+    async iterateSegmentTargets(options, callback) {
+
+        await this.iterateSegments(options, 
+            async ({iteratees}) => {
+
+                let {segment} = iteratees
+                let {targets} = segment
+
+                for (let target of targets) {
+                    await callback(assign(iteratees, {target, targets}))
+                }
 
             }
         )
@@ -288,7 +351,7 @@ class Scroid {
         // }
     }
 
-    createFilter({confirmed, stage, changed} = {}) {
+    createFilter({confirmed, stage, changed, hasComments} = {}) {
         let filters = []
         
         if (confirmed != undefined) {
@@ -301,6 +364,13 @@ class Scroid {
                 includeAutoRevisions: false, 
                 revisionAccountUserId: [],
                 revisionStageNumber: null
+            })
+        }
+
+        if (hasComments) {
+            filters.push({
+                name: 'comments',
+                hasComments: true
             })
         }
         
@@ -972,7 +1042,8 @@ class Scroid {
         if (!accountName) accountName = smartcatCredentials.defaultAccount
 
         let {auth, server} = smartcatCredentials.accounts[accountName]
-        let subDomain = domainByServer[server]
+        this.subDomain = domainByServer[server]
+        let {subDomain} = this
 
         this.smartcat = new Smartcat({auth, subDomain}).methods
         

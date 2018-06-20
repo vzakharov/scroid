@@ -39,7 +39,8 @@ async function main() {
 
         let folder = {
             downloads: 'C:/users/asus/downloads/',
-            xsolla: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/',
+            xsolla: 'C:/Users/asus/Documents/GitHub/Xsolla/',
+            weebly: 'C:/Users/asus/Documents/GitHub/weebly/',
             settings: './private/settings/',
             tmp: './private/tmp/'
         }
@@ -50,31 +51,40 @@ async function main() {
 
         scroid.setSmartcatAccount(smartcatAccountName)
 
-        go.createProject()
+        let projectNames = scroid.load('projects')[smartcatAccountName]
+        let options = {
+            // projectFilter: project => projectNames.includes(project.name)
+            projectFilter: {name: 'PA_strings_translations.json 180620'}
+        }
 
-        var go = {
+        // await go().createProject()
+        await go().assignProject({stage: 1})
 
-            createProject() {
+        return
 
-                let project = await scroid.createProject(folder.downloads + 'app.errs.latin_only.json', {
+        function go() { return {
+
+
+            async createProject() {
+
+                let project = await scroid.createProject(folder.downloads + 'PA_strings_translations.json', {
                     sourceLanguage: 'en',
                     targetLanguages: 'de zh-Hans ko ja ru'.split(' '),
                     workflowStages: ['translation'],
                     translationMemoryName: 'PA 1806',
-                    deadline: '2018-06-19T12:00:00.000Z',
+                    deadline: '2018-06-20T12:00:00.000Z',
                     //name: 'PA 1806',
                     includeDate: true
                 })
     
             },
 
-            assignProject() {
+            async assignProject({stage}) {
                 let teamTemplate = scroid.load('teamTemplates').default
                 let assigneesByLanguage = await scroid.getTeam(teamTemplate, {includeEmails: true})
                 scroid.iterateDocuments(options, async ({project, document}) => {
                     let {targetLanguage} = document
                     let assignees = assigneesByLanguage[targetLanguage]
-                    let stage = 2
                     // await scroid._assignUnconfirmed({document, stage, assignee})
                     await scroid.assignDocument_({
                         project, document, stage, 
@@ -83,7 +93,7 @@ async function main() {
                 })
             },
             
-            emailAssignees() {
+            async emailAssignees() {
 
                 let clientName = 'Xsolla'
                 let emails = await scroid._getEmails({project, documents, stage: 1}, {returnHash: false})
@@ -97,281 +107,265 @@ async function main() {
         
                 await scroid.addRecipientsToSequence({sequenceName, emails, variables})
                         
+            },
+
+            async completeFinishedDocuments() {
+
+                assign(options, {
+                    documentFilter: document => document.workflowStages[0].progress == 100 && document.status != 'completed'
+                })
+
+                scroid.iterateDocuments(options, async ({document}) => {
+
+                    await scroid._smartcat.documents(document.documentId).targets(document.targetLanguageId).complete()
+
+                })
+
+            },
+
+            async convertCsvsToJsons() {
+                let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Names correction 1806/'
+                await l10n.csvToJsons(path, ['ko', 'zh-Hans'])
+                return
+            },
+
+            async convertJsonOrYamlToTsv() {
+                let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Names correction 1806/'
+                let outFilename = path + 'table.tsv'
+    
+                let data = createTableFromHashFiles(path + 'in', {
+                    keysToRemoveIfAtLeastOneEmpty: 'en',
+                    format: 'json'
+                })
+                let tsv = json2csv.parse(data, {delimiter: '\t'})
+                fs.writeFileSync(outFilename, tsv)    
+            },
+
+            async getComments() {
+
+                assign(options, {
+                    multilingual: true,
+                    segmentFilter: {hasComments: true}
+                })
+
+                let allComments = []
+
+                await scroid.iterateSegments(options, async ({project, document, segment}) => {
+
+                    let {topicId} = segment
+
+                    let {items} = await scroid._smartcat.topics(topicId).comments({
+                        documentId: document.id,
+                        topicType: 'SEGMENT',
+                        start: 0, limit: 100
+                    })
+
+                    let segmentComments = map(
+                        filter(items, comment => comment.userId), 
+                        comment => `${comment.userName}: ${comment.removeType == null ? comment.text : "[comment deleted]"}`
+                    ).join('\n\n')
+
+                    let hyperlink = (text, link) => `=HYPERLINK("${link}", "${text}")`
+                    allComments.push({
+                        project: scroid.googleSheetLink({project}),
+                        document: scroid.googleSheetLink({document}),
+                        segmentNumber: segment.number,
+                        key: segment.localizationContext.join('\n'),
+                        sourceText: segment.source.text,
+                        comments: segmentComments
+                    })
+
+                })
+                
+                let tsv = json2csv.parse(allComments, {delimiter})
+                fs.writeFileSync(folder.weebly + 'comments.tsv', tsv)
+
+            },
+
+            async propagateCsvChangesToYaml() {
+                let encoding = 'utf8'
+                let before = keyBy(await csv2json().fromFile(path + 'before.csv'), 'key')
+                let after = keyBy(await csv2json().fromFile(path + 'after.csv'), 'key')
+    
+                let changes = {}
+    
+    
+                for (let key in before) {
+                    for (let language in before[key]) {
+                        if (before[key][language] == after[key][language]) continue
+                        if (!changes[language]) changes[language] = {}
+    
+                        let change = changes[language][key] = {
+                            before: before[key][language],
+                            after: after[key][language]
+                        }
+    
+                        let linesBefore = change.before.split(/\r?\n/)
+                        let linesAfter = change.after.split(/\r?\n/)
+                        change.diffs = []
+                        for (let i = 0; i < min([linesBefore.length, linesAfter.length]); i++) {
+                            change.diffs[i] = getDiff(linesBefore[i], linesAfter[i])
+                        }
+                    }
+                }
+    
+                let object = loadYamls(path + 'translations')
+    
+                for (let filename in object) {
+                    let language = filename.match(/(?<=^).*?(?=\.)/)[0]
+                    let filePath = [path, 'translations', language, filename + '.yaml'].join('/')
+    
+                    deepFor(object[filename], (value, nestedKeys, keyPath) => {
+                        let languageChanges = changes[language]
+                        let change = languageChanges[keyPath]
+                        if (change) {
+                            let lines = fs
+                                .readFileSync(
+                                    filePath, 
+                                    {encoding: 'utf-8'}
+                                )
+                                .split(/\r?\n/)
+                            let keyDepth, matchFound
+    
+                            let resetCounters = () => {
+                                matchFound = false
+                                keyDepth = 0
+                            }
+    
+                            resetCounters()
+    
+                            lineLoop:
+                            for (let i = 0; i < lines.length; i++) {
+    
+                                // A match was found but didn’t work
+                                if (matchFound) {
+                                    resetCounters()
+                                }
+    
+                                let line = lines[i]
+    
+                                let setLine = (k) => {
+                                    i = k
+                                    line = lines[k]
+                                }
+    
+                                let key = nestedKeys[keyDepth]
+    
+                                if (!matchFound) {
+                                    let match = line.match(new RegExp(`^ *${key}: *`))
+                                    if (match) {
+                                        keyDepth++
+                                        if (keyDepth != nestedKeys.length) continue
+                                        matchFound = true
+                                    } else {
+                                        continue lineLoop
+                                    }
+                                }
+    
+                                if (matchFound) {
+    
+                                    let edited, missed
+                                    let {diffs} = change
+    
+                                    diffLoop:
+                                    for (let j = 0; j < diffs.length; j++) {
+                                        let diff = diffs[j]
+    
+                                        let {array} = diff
+                                        if (array.length == 1) {
+                                            continue
+                                        }
+    
+                                        let match
+    
+                                        do {
+                                            match = line.match(/(^ *(?:([^ ]+): *)?).*?([>|]-)?$/)
+    
+                                            if (match[2] && match[2] != key) {
+                                                continue lineLoop
+                                            }
+            
+                                            if (match[3]) {
+                                                setLine(i + 1)
+                                            }
+    
+                                        } while(match[3])
+    
+                                        let replaceWhat = match[1]
+    
+                                        pieceLoop:
+                                        for (let piece of array) {
+                                            if (!piece.changed) {
+                                                replaceWhat += piece.value
+                                            } else {
+                                                let newLine
+                                                if (piece.added) {
+                                                    newLine = line.replace(replaceWhat, replaceWhat + piece.value)
+                                                    replaceWhat += piece.value
+                                                } else if (piece.removed) {
+                                                    newLine = line.replace(replaceWhat + piece.value, replaceWhat)
+                                                }
+    
+                                                if (newLine == line) {
+                                                    j--
+                                                    setLine(i + 1)
+                                                    continue diffLoop
+                                                } else {
+                                                    line = newLine
+                                                    edited = true
+                                                }
+                                            }
+                                        }
+                                        
+                                        if (edited) {
+                                            lines[i] = line
+                                            delete languageChanges[keyPath]
+                                            fs.writeFileSync(filePath, lines.join('\n'))
+                                            if (j < diffs.length - 1) {
+                                                setLine(i + 1)
+                                            }
+                                        }
+            
+                                    }
+    
+                                    return
+                                }
+                            }
+                        }
+                    })
+                }
+    
+    
+                let check = beforeOrAfter => {
+                    let out = {}
+                    for (let language in changes) {
+                        out[language] = {}
+                        for (let key in changes[language]) {
+                            out[language][key] = changes[language][key][beforeOrAfter]
+                        }
+                    }
+                    return out
+                }
+    
+                writeYaml.sync(path + 'remaining.yaml', check('before'))
+                writeYaml.sync(path + 'remaining.yaml', check('after'))
+    
+                // for (let lang in changes) {
+                //     let langChanges = changes[lang]
+    
+                //     for (let key in langChanges) {
+                //         let stops = key.split('/')
+    
+                //         let filename = find()
+                //     }
+    
+                // }
+    
+                return changes
             }
 
-        }
+        }}
 
-
-
-
-            // let options = {
-            //     projectFilter: project => projectNames.includes(project.name),
-            //     documentFilter: document => 
-            //         document.workflowStages[0].progress < 100,
-            //     stageNumber: 1,
-            //     report: ({project, document}) => ({
-            //         project: project.name, 
-            //         language: document.targetLanguage
-            //     })
-            // }
-
-            // let outFilename = folder.tmp + 'weebly.tsv'
-
-            // let assignees = await scroid.getAssignees(options)
-
-            // let emails = await scroid.getEmails({assignees}, {modifyAssignees: true})
-
-            // let tsv = json2csv.parse(assignees, {delimiter: '\t'})
-            // fs.writeFileSync(outFilename, tsv)
-
-            // return assignees
-
-        
-
-
-            // await scroid.assignPinnedFreelancers(options)
-
-            // /* Load CSV and save as JSON */
-            // let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Names correction 1806/'
-            // await l10n.csvToJsons(path, ['ko', 'zh-Hans'])
-            // return
-
-            //let documents = project.documents
-            //let documents = filter(project.documents, document => document.name.includes('319'))
-            // let documents = scroid.getMultilingualDocuments(project)
-
-            // let path = 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Names correction 1806/'
-            // let outFilename = path + 'table.tsv'
-
-            // // /* Turned hash files (json/yaml) into tsv table */
-
-            // let data = createTableFromHashFiles(path + 'in', {
-            //     keysToRemoveIfAtLeastOneEmpty: 'en',
-            //     format: 'json'
-            // })
-            // let tsv = json2csv.parse(data, {delimiter: '\t'})
-            // fs.writeFileSync(outFilename, tsv)
-
-
-            // // let encoding = 'utf8'
-            // // let before = keyBy(await csv2json().fromFile(path + 'before.csv', {delimiter: '\t'}), 'key')
-            // // let after = keyBy(await csv2json().fromFile(path + 'after.csv', {delimiter: '\t'}), 'key')
-
-            // // let changes = {}
-
-
-            // for (let key in before) {
-            //     for (let language in before[key]) {
-            //         if (before[key][language] == after[key][language]) continue
-            //         if (!changes[language]) changes[language] = {}
-
-            //         let change = changes[language][key] = {
-            //             before: before[key][language],
-            //             after: after[key][language]
-            //         }
-
-            //         let linesBefore = change.before.split(/\r?\n/)
-            //         let linesAfter = change.after.split(/\r?\n/)
-            //         change.diffs = []
-            //         for (let i = 0; i < min([linesBefore.length, linesAfter.length]); i++) {
-            //             change.diffs[i] = getDiff(linesBefore[i], linesAfter[i])
-            //         }
-            //     }
-            // }
-
-            // let object = loadYamls(path + 'translations')
-
-            // for (let filename in object) {
-            //     let language = filename.match(/(?<=^).*?(?=\.)/)[0]
-            //     let filePath = [path, 'translations', language, filename + '.yaml'].join('/')
-
-            //     deepFor(object[filename], (value, nestedKeys, keyPath) => {
-            //         let languageChanges = changes[language]
-            //         let change = languageChanges[keyPath]
-            //         if (change) {
-            //             let lines = fs
-            //                 .readFileSync(
-            //                     filePath, 
-            //                     {encoding: 'utf-8'}
-            //                 )
-            //                 .split(/\r?\n/)
-            //             let keyDepth, matchFound
-
-            //             let resetCounters = () => {
-            //                 matchFound = false
-            //                 keyDepth = 0
-            //             }
-
-            //             resetCounters()
-
-            //             lineLoop:
-            //             for (let i = 0; i < lines.length; i++) {
-
-            //                 // A match was found but didn’t work
-            //                 if (matchFound) {
-            //                     resetCounters()
-            //                 }
-
-            //                 let line = lines[i]
-
-            //                 let setLine = (k) => {
-            //                     i = k
-            //                     line = lines[k]
-            //                 }
-
-            //                 let key = nestedKeys[keyDepth]
-
-            //                 if (!matchFound) {
-            //                     let match = line.match(new RegExp(`^ *${key}: *`))
-            //                     if (match) {
-            //                         keyDepth++
-            //                         if (keyDepth != nestedKeys.length) continue
-            //                         matchFound = true
-            //                     } else {
-            //                         continue lineLoop
-            //                     }
-            //                 }
-
-            //                 if (matchFound) {
-
-            //                     let edited, missed
-            //                     let {diffs} = change
-
-            //                     diffLoop:
-            //                     for (let j = 0; j < diffs.length; j++) {
-            //                         let diff = diffs[j]
-
-            //                         let {array} = diff
-            //                         if (array.length == 1) {
-            //                             continue
-            //                         }
-
-            //                         let match
-
-            //                         do {
-            //                             match = line.match(/(^ *(?:([^ ]+): *)?).*?([>|]-)?$/)
-
-            //                             if (match[2] && match[2] != key) {
-            //                                 continue lineLoop
-            //                             }
-        
-            //                             if (match[3]) {
-            //                                 setLine(i + 1)
-            //                             }
-
-            //                         } while(match[3])
-
-            //                         let replaceWhat = match[1]
-
-            //                         pieceLoop:
-            //                         for (let piece of array) {
-            //                             if (!piece.changed) {
-            //                                 replaceWhat += piece.value
-            //                             } else {
-            //                                 let newLine
-            //                                 if (piece.added) {
-            //                                     newLine = line.replace(replaceWhat, replaceWhat + piece.value)
-            //                                     replaceWhat += piece.value
-            //                                 } else if (piece.removed) {
-            //                                     newLine = line.replace(replaceWhat + piece.value, replaceWhat)
-            //                                 }
-
-            //                                 if (newLine == line) {
-            //                                     j--
-            //                                     setLine(i + 1)
-            //                                     continue diffLoop
-            //                                 } else {
-            //                                     line = newLine
-            //                                     edited = true
-            //                                 }
-            //                             }
-            //                         }
-                                    
-            //                         if (edited) {
-            //                             lines[i] = line
-            //                             delete languageChanges[keyPath]
-            //                             fs.writeFileSync(filePath, lines.join('\n'))
-            //                             if (j < diffs.length - 1) {
-            //                                 setLine(i + 1)
-            //                             }
-            //                         }
-        
-            //                     }
-
-            //                     return
-            //                 }
-            //             }
-            //         }
-            //     })
-            // }
-
-
-            // let check = beforeOrAfter => {
-            //     let out = {}
-            //     for (let language in changes) {
-            //         out[language] = {}
-            //         for (let key in changes[language]) {
-            //             out[language][key] = changes[language][key][beforeOrAfter]
-            //         }
-            //     }
-            //     return out
-            // }
-
-            // writeYaml.sync(path + 'remaining.yaml', check('before'))
-            // writeYaml.sync(path + 'remaining.yaml', check('after'))
-
-            // // for (let lang in changes) {
-            // //     let langChanges = changes[lang]
-
-            // //     for (let key in langChanges) {
-            // //         let stops = key.split('/')
-
-            // //         let filename = find()
-            // //     }
-
-            // // }
-
-            // return changes
-
-            // let projectName = 'publisher-client manual'
-            // let project = await scroid.getProject(projectName)
-            // //let documents = project.documents
-            // //let documents = filter(project.documents, document => document.name.includes('319'))
-            // let documents = scroid.getMultilingualDocuments(project)
-            // for (let document of documents) {
-            //     let segments = await scroid.getSegmentsWithTargetSameAsSource(document)
-            //     // let segments = await scroid.getSegmentsByContext(document, /\.(help|description|tooltip)'/)
-            //     let data = map(segments, segment => {
-            //         let item = {number: segment.number, en: segment.source.text}
-            //         for (let target of segment.targets) {
-            //             item[target.language] = target.text
-            //         }
-            //         return item
-            //     })
-            //     // for (let segment of segments) {
-            //     //     for (let target of segment.targets) {
-            //     //         let {language, text} = target
-            //     //         let dot = language.match('ja|zh') ? '。' : '.'
-            //     //         let lastChar = text.charAt(text.length - 1)
-            //     //         if (!'.?!。？！'.includes(lastChar)) {
-            //     //             target.text += dot
-            //     //             await scroid.editSegment_(document, segment, {confirm: true, languages: [language]})
-            //     //         }
-            //     //     }
-            //     // }
-            //     // let data = map(segments, segment => ({
-            //     //     number: segment.number, context: segment.localizationContext[0]
-            //     // }))
-            //     let tsv = json2csv.parse(data, {delimiter: '\t'})
-            //     fs.writeFileSync(path + document.name + '.tsv', tsv)
-            //     return tsv
-            // }
-
-            // // /* Replace newlines with tags */
-
-            // // for (let document of project.documents) {
-            // //     await scroid.convertDocumentNewlinesToTags(document)
-            // // }
 
             // /* Load translations into one object and pretranslate a document with it*/
 
@@ -391,9 +385,6 @@ async function main() {
             //         editIfNonEmpty: false
             //     })
             // })
-
-            // /* Create jsons out of ymls */
-            // scroid.createJsonsFromYmls('C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Docs 1806/en')
 
             // /* Rename yaml to yml */
             // scroid.renameYamlsToYmls('C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Docs 1806')
@@ -516,6 +507,8 @@ async function main() {
         //     path: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Report 1806', 
         //     excludeCompleted: true
         // })
+    
+    
     
     } catch(error) {
         throw(error)
