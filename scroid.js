@@ -40,7 +40,7 @@ class Scroid {
             text = project.name
         } else if (document) {
             if (targetLanguageId) {
-                url = `${domain}/editor?documentId=${document.documentId}&languageId=${targetLanguageId}`                
+                url = `${domain}/editor?documentId=${document.documentId}&languageId=${targetLanguageId}`
                 text = `${document.name} (${document.targetLanguage})`
             } else {
                 url = `${domain}/grid-editor?documentId=${document.documentId}`
@@ -154,6 +154,43 @@ class Scroid {
 
         })
 
+    }
+
+    async iterateAssignees(options, callback) {
+        let {assigneeFilter} = options
+
+        await this.iterateStages(options, 
+            async iteratees => {
+
+                let {stage} = iteratees
+
+                let assignees = filter(stage.executives, assigneeFilter)
+
+                for (let assignee of assignees) {
+                    await callback(assign(iteratees, {assignee, assignees}))
+                }
+
+            }
+        )
+    }
+
+
+    async iterateStages(options, callback) {
+        let {stageFilter} = options
+
+        await this.iterateDocuments(options, 
+            async iteratees => {
+
+                let {document} = iteratees
+
+                let stages = filter(document.workflowStages, stageFilter)
+
+                for (let stage of stages) {
+                    await callback(assign(iteratees, {stage, stages}))
+                }
+
+            }
+        )
     }
 
     async iterateSegments(options, callback) {
@@ -492,9 +529,10 @@ class Scroid {
     
         if (!email) {
             console.log('Nothing stored locally, requesting via API...')
-            let profile = (
-                await this.__smartcat.get(`freelancers/profile/${idHash.userId}`)
-            ).data
+            // let profile = (
+            //     await this.__smartcat.get(`freelancers/profile/${idHash.userId}`)
+            // ).data
+            let profile = await this._smartcat.freelancers.profile(idHash.userId)
     
             email = profile.myTeamContacts && profile.myTeamContacts.email || profile.ownContacts.email
 

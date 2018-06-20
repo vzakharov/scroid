@@ -1,7 +1,7 @@
 const _ = require('lodash')
 const {
     assign, filter, find, flatten, groupBy, keyBy, last, min, maxBy, minBy, map, mapKeys,
-    pick, pull, pullAt, orderBy, reject, remove, reverse, 
+    pick, pull, pullAt, orderBy, reject, remove, reverse, round,
     sumBy, uniqBy
 } = _
 
@@ -47,18 +47,20 @@ async function main() {
 
         let scroid = new Scroid(username)
 
-        let smartcatAccountName = 'xsolla'
+        let smartcatAccountName = 'weebly'
 
         scroid.setSmartcatAccount(smartcatAccountName)
 
         let projectNames = scroid.load('projects')[smartcatAccountName]
         let options = {
-            // projectFilter: project => projectNames.includes(project.name)
-            projectFilter: {name: 'PA_strings_translations.json 180620'}
+            projectFilter: project => projectNames.includes(project.name)
+            // projectFilter: {name: 'weebly-customer-accounts-integration'}
         }
 
         // await go().createProject()
-        await go().assignProject({stage: 1})
+        // await go().assignProject({stage: 1})
+        let uncompletedJobs = await go().getUncompletedJobs()
+        go().writeTsv({uncompletedJobs})
 
         return
 
@@ -179,6 +181,36 @@ async function main() {
                 
                 let tsv = json2csv.parse(allComments, {delimiter})
                 fs.writeFileSync(folder.weebly + 'comments.tsv', tsv)
+
+            },
+
+            async getUncompletedJobs() {
+
+                let uncompletedJobs = []
+
+                assign(options, {
+                    stageFilter: stage => stage.progress < 100
+                })
+
+                await scroid.iterateAssignees(options, async ({assignee, project, document}) => {
+                    let {targetLanguage, targetLanguageId} = document
+
+                    uncompletedJobs.push({
+                        email: await scroid.getEmail({userId: assignee.id}),
+                        targetLanguage,
+                        project: project.name,
+                        document: document.name,
+                        documentUrl: scroid.link({document, targetLanguageId}).url,
+                        assignedWords: assignee.assignedWordsCount,
+                        pendingWords: round((100 - assignee.progress) * assignee.assignedWordsCount / 100),
+                        progress: assignee.progress
+                    })
+
+                    let job = last(uncompletedJobs)
+                    job.infoLine = `${job.document} (${job.documentUrl}): ${job.pendingWords} words`
+                })
+
+                return uncompletedJobs
 
             },
 
@@ -362,6 +394,16 @@ async function main() {
                 // }
     
                 return changes
+            },
+
+            async writeTsv(data, path = folder.tmp) {
+
+                for (let key in data) {
+                    let filename = `${path}${key}.tsv`
+                    let tsv = json2csv.parse(data[key], {delimiter})
+                    fs.writeFileSync(filename, tsv)
+                }
+
             }
 
         }}
