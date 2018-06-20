@@ -29,6 +29,7 @@ const serverSessionSuffix = {
     eu: 'ru', us: 'us', ea: 'ea'
 }
 
+const {stringify} = JSON
 
 class Scroid {
 
@@ -512,40 +513,37 @@ class Scroid {
     }
 
     /** identifier: {name, userId} */
-    async getEmail(idHash) {
+    async getContact(filter, force) {
 
-        if (!this.emails) this.load('emails')
-        let {emails} = this
-        let email
+        this.load('contacts')
+        let {contacts} = this
+        let contact = find(contacts, filter)
 
-        for (let key in idHash) {
-            let id = idHash[key]
-            console.log(`Looking up email for ${key} = ${id}...`)
-            let emailsByKey = emails.by[key]
-            if (!emailsByKey) continue
-            email = emailsByKey[id]
-            if (email) break
+        if (force) {
+            console.log(`Updating contact data for ${stringify(filter)}...`)
+        } else {
+            console.log(`Looking up contact data for ${stringify(filter)}...`)
         }
-    
-        if (!email) {
-            console.log('Nothing stored locally, requesting via API...')
-            // let profile = (
-            //     await this.__smartcat.get(`freelancers/profile/${idHash.userId}`)
-            // ).data
-            let profile = await this._smartcat.freelancers.profile(idHash.userId)
-    
-            email = profile.myTeamContacts && profile.myTeamContacts.email || profile.ownContacts.email
 
-            for (let key in idHash) {
-                setDeep(emails.by, [key, idHash[key]], email)
+        if (!contact || force) {
+            console.log('Not found locally, requesting via API...')
+            let profile = await this._smartcat.freelancers.profile(filter.userId)
+    
+            let {firstName, transliteratedFullName, id} = profile
+            contact = assign({
+                name: transliteratedFullName, userId: id, firstName
+            }, profile.myTeamContacts, profile.ownContacts)
+            if (!contact.externalId) delete contact.externalId
+            for (let key in contact) {
+                if (!key) delete contact[key]
             }
+            this.save({contacts})
         }
     
-        this.save({emails})
 
-        console.log(`\tDone: ${email}.`)
+        console.log(`\tDone: ${stringify(contact)}.`)
 
-        return email
+        return contact
     
     }
 
@@ -591,7 +589,7 @@ class Scroid {
     
             let {userId, name} = assignee
         
-            let email = await this.getEmail({name, userId})
+            let {email} = await this.getContact({name, userId})
     
             if (returnHash) {
                 emails[name] = email
@@ -856,7 +854,8 @@ class Scroid {
     
     }
 
-    async joinByContext_(documents, {onlyJoinIfAllConfirmed, onlyJoinIfNotAllConfirmed} = {}) {
+    async joinByContext_(filters, {onlyJoinIfAllConfirmed, onlyJoinIfNotAllConfirmed} = {}) {
+
         if (!isArray(documents)) documents = [documents]
     
         let documentNames = []

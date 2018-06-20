@@ -47,20 +47,20 @@ async function main() {
 
         let scroid = new Scroid(username)
 
-        let smartcatAccountName = 'weebly'
+        let smartcatAccountName = 'xsolla'
 
         scroid.setSmartcatAccount(smartcatAccountName)
 
         let projectNames = scroid.load('projects')[smartcatAccountName]
         let options = {
             projectFilter: project => projectNames.includes(project.name)
-            // projectFilter: {name: 'weebly-customer-accounts-integration'}
+            // projectFilter: {name: 'android-mand-1307'}
         }
 
         // await go().createProject()
         // await go().assignProject({stage: 1})
-        let uncompletedJobs = await go().getUncompletedJobs()
-        go().writeTsv({uncompletedJobs})
+        // let uncompletedJobs = await go().getUncompletedJobs()
+        // go().writeTsv({uncompletedJobs})
 
         return
 
@@ -69,12 +69,12 @@ async function main() {
 
             async createProject() {
 
-                let project = await scroid.createProject(folder.downloads + 'PA_strings_translations.json', {
+                let project = await scroid.createProject(folder.downloads + 'test.json', {
                     sourceLanguage: 'en',
                     targetLanguages: 'de zh-Hans ko ja ru'.split(' '),
                     workflowStages: ['translation'],
                     translationMemoryName: 'PA 1806',
-                    deadline: '2018-06-20T12:00:00.000Z',
+                    // deadline: '2018-06-20T12:00:00.000Z',
                     //name: 'PA 1806',
                     includeDate: true
                 })
@@ -194,9 +194,14 @@ async function main() {
 
                 await scroid.iterateAssignees(options, async ({assignee, project, document}) => {
                     let {targetLanguage, targetLanguageId} = document
+                    let contact = await scroid.getContact({userId: assignee.id})
+
+                    let {email, firstName} = contact
+
+                    if (!firstName) firstName = 'there'
 
                     uncompletedJobs.push({
-                        email: await scroid.getEmail({userId: assignee.id}),
+                        email, firstName,
                         targetLanguage,
                         project: project.name,
                         document: document.name,
@@ -213,6 +218,10 @@ async function main() {
                 return uncompletedJobs
 
             },
+
+            async joinByContext() {
+                await scroid.joinByContext_(project.documents, {onlyJoinIfNotAllConfirmed: true})
+            }
 
             async propagateCsvChangesToYaml() {
                 let encoding = 'utf8'
