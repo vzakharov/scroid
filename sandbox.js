@@ -1,8 +1,8 @@
 const _ = require('lodash')
 const {
-    assign, filter, find, flatten, groupBy, keyBy, last, min, maxBy, minBy, map, mapKeys,
-    pick, pull, pullAt, orderBy, reject, remove, reverse, round,
-    sumBy, uniqBy
+    assign, capitalize, filter, find, flatten, groupBy, keyBy, last, 
+    min, maxBy, minBy, map, mapKeys, pick, pull, pullAt, orderBy, 
+    reject, remove, reverse, round, sumBy, uniqBy
 } = _
 
 const Diff = require('diff')
@@ -39,28 +39,51 @@ async function main() {
 
         let folder = {
             downloads: 'C:/users/asus/downloads/',
-            xsolla: 'C:/Users/asus/Documents/GitHub/Xsolla/',
+            Xsolla: 'C:/Users/asus/Documents/GitHub/Xsolla/',
             weebly: 'C:/Users/asus/Documents/GitHub/weebly/',
-            settings: './private/settings/',
-            tmp: './private/tmp/'
+            settings: 'C:/Users/asus/Documents/GitHub/scroid/private/settings/',
+            tmp: 'C:/Users/asus/Documents/GitHub/scroid/private/tmp/'
         }
 
         let scroid = new Scroid(username)
 
-        let smartcatAccountName = 'xsolla'
+        let smartcatAccountName = 'Xsolla'
 
-        scroid.setSmartcatAccount(smartcatAccountName)
+        scroid.setAccount(smartcatAccountName)
 
-        let projectNames = scroid.load('projects')[smartcatAccountName]
-        let options = {
-            projectFilter: project => projectNames.includes(project.name)
-            // projectFilter: {name: 'android-mand-1307'}
+        let projectNames = 
+            // [
+            //     'trumpet-gdprcontactsmodal', 
+            //     'trumpet-prom1557networkerror', 
+            //     'trumpet-springboardpopupdash'
+            // ]
+            scroid.load('projects')
+        let filters = {
+            projectFilter: 
+                // project => projectNames.includes(project.name),
+                {name: 'Publisher Account Client'},
+            documentFilter: 
+                document => document.name.match(/translate-sb/),
+            // document => !document.targetLanguage.match(/ru|en-US/) && document.name.match(/1076/),
+            //  {
+            //     let stage = last(document.workflowStages)
+            //     return stage.progress < 100
+            // },
+            // documentFilter: {targetLanguage: 'es'},
+            // stageNumber: 2
+            end: null
         }
 
-        // await go().createProject()
-        // await go().assignProject({stage: 1})
-        // let uncompletedJobs = await go().getUncompletedJobs()
-        // go().writeTsv({uncompletedJobs})
+        // let project = await go().createProject()
+        // await go().pretranslateWithAnObject()
+        await scroid.assignFreelancers(filters, {mode: 'rocket', teamName: 'default'})
+        // await go().assignUnique(filters, 'proofreaders')
+        // let pendingJobs = await go().getPendingJobs()
+        // scroid.save({pendingJobs})
+
+        // await go().joinByContext()
+
+        //await go().completeFinishedDocuments()
 
         return
 
@@ -69,35 +92,69 @@ async function main() {
 
             async createProject() {
 
-                let project = await scroid.createProject(folder.downloads + 'test.json', {
+                let project = await scroid.createProject(folder.downloads + 'en.json', {
                     sourceLanguage: 'en',
                     targetLanguages: 'de zh-Hans ko ja ru'.split(' '),
                     workflowStages: ['translation'],
-                    translationMemoryName: 'PA 1806',
-                    // deadline: '2018-06-20T12:00:00.000Z',
-                    //name: 'PA 1806',
-                    includeDate: true
+                    translationMemoryName: 'PA 1806 cleaned',
+                    // deadline: '2018-06-26T10:00:00.000Z',
+                    // includeDate: true
+                    name: 'PA 180626'
                 })
     
+                return project
+
             },
 
-            async assignProject({stage}) {
+            async assignDocuments({stage}) {
                 let teamTemplate = scroid.load('teamTemplates').default
                 let assigneesByLanguage = await scroid.getTeam(teamTemplate, {includeEmails: true})
-                scroid.iterateDocuments(options, async ({project, document}) => {
+
+                scroid.iterateDocuments(filters, async ({project, document}) => {
                     let {targetLanguage} = document
                     let assignees = assigneesByLanguage[targetLanguage]
                     // await scroid._assignUnconfirmed({document, stage, assignee})
-                    await scroid.assignDocument_({
+                    await scroid.assignDocument({
                         project, document, stage, 
                         assignees, assignmentMode: 'rocket'
                     })
                 })
+                
             },
-            
+
+            async assignUnique(filters, team) {
+
+                let teamTemplate = scroid.load('teams')[team]
+                assigneesByLanguage = await scroid.getTeam(teamTemplate)
+    
+                await scroid.iterateDocuments(assign({}, filters, {multilingual: true, documentFilter: {}}), async ({project, document}) => {
+
+                    let segments = await scroid.getSegments(document, {multilingual: true})
+
+                    segments = uniqBy(segments, 'source.text')
+
+                    let ranges = scroid.getRanges(segments)
+
+                    let {documentId} = document
+
+                    await scroid.iterateDocuments(assign(filters, {multilingual: false}), async ({document}) => {
+
+                        await scroid.assignRanges(
+                            document, 
+                            filters.stageNumber, 
+                            ranges, 
+                            assigneesByLanguage[document.targetLanguage][0]
+                        )
+
+                    })
+
+                    return ranges
+                })
+            },
+
             async emailAssignees() {
 
-                let clientName = 'Xsolla'
+                let clientName = capitalize(smartcatAccountName)
                 let emails = await scroid._getEmails({project, documents, stage: 1}, {returnHash: false})
                 let documentNameForMixmax = 'login-319'
                 let sequenceName = `Introducing Chau`
@@ -113,11 +170,11 @@ async function main() {
 
             async completeFinishedDocuments() {
 
-                assign(options, {
-                    documentFilter: document => document.workflowStages[0].progress == 100 && document.status != 'completed'
+                assign(filters, {
+                    documentFilter: document => last(document.workflowStages).progress == 100 && document.status != 'completed'
                 })
 
-                scroid.iterateDocuments(options, async ({document}) => {
+                scroid.iterateDocuments(filters, async ({document}) => {
 
                     await scroid._smartcat.documents(document.documentId).targets(document.targetLanguageId).complete()
 
@@ -145,14 +202,14 @@ async function main() {
 
             async getComments() {
 
-                assign(options, {
+                assign(filters, {
                     multilingual: true,
                     segmentFilter: {hasComments: true}
                 })
 
                 let allComments = []
 
-                await scroid.iterateSegments(options, async ({project, document, segment}) => {
+                await scroid.iterateSegments(filters, async ({project, document, segment}) => {
 
                     let {topicId} = segment
 
@@ -184,44 +241,123 @@ async function main() {
 
             },
 
-            async getUncompletedJobs() {
+            async getUnassignedJobs() {
 
-                let uncompletedJobs = []
+                let unassignedJobs = []
 
-                assign(options, {
-                    stageFilter: stage => stage.progress < 100
+                let stageFilter = stage => stage.status == 'notAssigned'
+
+                await scroid.iterateDocuments(filters, async ({project, document}) => {
+
+                    let {assignment} = await scroid.getAssignmentData(project, document)
+                    for (let stage of filter(assignment.workflowStages, stageFilter)) {
+                        return
+                    }
                 })
 
-                await scroid.iterateAssignees(options, async ({assignee, project, document}) => {
-                    let {targetLanguage, targetLanguageId} = document
-                    let contact = await scroid.getContact({userId: assignee.id})
+            },
 
-                    let {email, firstName} = contact
+            async getPendingJobs() {
 
-                    if (!firstName) firstName = 'there'
+                let pendingJobs = []
 
-                    uncompletedJobs.push({
-                        email, firstName,
-                        targetLanguage,
-                        project: project.name,
-                        document: document.name,
-                        documentUrl: scroid.link({document, targetLanguageId}).url,
-                        assignedWords: assignee.assignedWordsCount,
-                        pendingWords: round((100 - assignee.progress) * assignee.assignedWordsCount / 100),
-                        progress: assignee.progress
-                    })
+                let stageFilter = stage => stage.progress != 100
 
-                    let job = last(uncompletedJobs)
-                    job.infoLine = `${job.document} (${job.documentUrl}): ${job.pendingWords} words`
+                await scroid.iterateDocuments(filters, async ({project, document}) => {
+
+                    let unassignedFilter = {status: 'notAssigned'}
+
+                    let assignees = []
+
+                    if (find(document.workflowStages, unassignedFilter)) {
+
+                        let {assignment} = await scroid.getAssignmentData(project, document)
+                        for (let stage of assignment.workflowStages) {
+
+                            // Todo: account for non-rocket assignments
+                            for (let invitation of filter(stage.freelancerInvitations, {
+                                isAccepted: false,
+                                isDeclined: false
+                            })) {
+                                let {userId} = invitation
+                                let {stageNumber} = stage
+                                assignees.push({
+                                    userId,
+                                    progress: 0,
+                                    assignedWordsCount: document.wordsCount,
+                                    stageNumber,
+                                    status: 'notAssigned'
+                                })
+                            }
+                        }    
+
+                    }
+
+                    for (let stage of filter(document.workflowStages, stageFilter)) {
+                        for (let assignee of stage.executives) {
+                            let {stageNumber, status} = stage
+                            assignees.push(assign(assignee, {stageNumber, status}))
+                        }
+                    }
+                    
+                    for (let assignee of assignees) {
+                        let {targetLanguage, targetLanguageId} = document
+                        let {userId, progress, assignedWordsCount, stageNumber, status} = assignee
+                        let contact = await scroid.getContact({userId})
+    
+                        let {email, firstName} = contact
+    
+                        if (!firstName) firstName = 'there'
+    
+                        pendingJobs.push({
+                            email, 'First name': firstName,
+                            targetLanguage,
+                            client: scroid.accountName,
+                            project: project.name,
+                            document: document.name,
+                            projectUrl: scroid.link({project}).url,
+                            deadline: project.deadline,
+                            documentUrl: scroid.link({document, targetLanguageId}).url,
+                            stageNumber,
+                            status,
+                            wordsTotal: assignedWordsCount,
+                            wordsLeft: round((100 - progress) * assignedWordsCount / 100),
+                            progress: progress
+                        })
+                    }
+
                 })
 
-                return uncompletedJobs
+
+
+                return pendingJobs
 
             },
 
             async joinByContext() {
-                await scroid.joinByContext_(project.documents, {onlyJoinIfNotAllConfirmed: true})
-            }
+                await scroid.joinByContext(filters, {onlyJoinIfNotAllConfirmed: true})
+            },
+
+            async pretranslateWithAnObject() {
+                /* Load translations into one object and pretranslate a document with it*/
+
+                let path = folder.tmp + 'PA 180626/translations'
+                let data = createTableFromHashFiles(path, {
+                    keysToRemoveIfAtLeastOneEmpty: 'en',
+                    format: 'json'
+                })
+                let object = mapKeys(data, 'key')
+
+                await scroid.iterateDocuments({projectFilter: {name: 'PA 180626'}, multilingual: true}, async ({document}) => {
+                    await scroid.pretranslateWith_(document, object, {
+                        contextFormat: 'json',
+                        parseFilenames: false,
+                        convertNewLinesToTags: true,
+                        confirm: false,
+                        editIfNonEmpty: false
+                    })
+                })
+            },
 
             async propagateCsvChangesToYaml() {
                 let encoding = 'utf8'
@@ -418,43 +554,12 @@ async function main() {
         }}
 
 
-            // /* Load translations into one object and pretranslate a document with it*/
-
-            // let path = folders.xsolla + 'PA 1806/translations/'
-            // let data = createTableFromHashFiles(path, {
-            //     keysToRemoveIfAtLeastOneEmpty: 'en',
-            //     format: 'json'
-            // })
-            // let object = mapKeys(data, 'key')
-
-            // await scroid.iterateDocuments({projectFilter: {name: 'PA 1806'}, multilingual: true}, async ({document}) => {
-            //     await scroid.pretranslateWith_(document, object, {
-            //         contextFormat: 'json',
-            //         parseFilenames: false,
-            //         convertNewLinesToTags: true,
-            //         confirm: false,
-            //         editIfNonEmpty: false
-            //     })
-            // })
+            
 
             // /* Rename yaml to yml */
             // scroid.renameYamlsToYmls('C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Docs 1806')
 
-            // // /* Pretranslate with a js object */
-            // let projectName = 'publisher-client alignment'
-            // let documentName = 'en'
-            // let project = await scroid.getProject(projectName)
-            // let path = `./private/tmp/${projectName}/${documentName}`
 
-            // for (let filename of fs.readdirSync(path)) {
-            //     let json = require(`${path}/${filename}`)
-
-            //     let targetLanguage = filename.match(/(.*)\.\w+$/)[1]
-            //     let document = find(project.documents, {name: documentName, targetLanguage})
-
-            //     scroid.pretranslateWith_(document, json, {contextFormat: 'json'})
-
-            // }
 
             // /* Confirm all non-empty segments, OR copy all sources to target & confirm */
 
