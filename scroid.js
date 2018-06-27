@@ -9,8 +9,8 @@ const _ = require('lodash')
 
 const {
     assign, capitalize, clone, filter, find, includes, 
-    isArray, isEqual, keyBy, keys, map, omit, pick, remove,
-    uniqBy
+    isArray, isEqual, keyBy, keys, last, map, omit, pick, remove,
+    sample, uniqBy
 } = _
 
 const {
