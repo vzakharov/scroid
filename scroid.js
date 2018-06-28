@@ -11,11 +11,11 @@ const _ = require('lodash')
 const {
     assign, capitalize, clone, cloneDeep, filter, find, includes, 
     isArray, isEqual, keyBy, keys, last, map, omit, pick, remove,
-    sample, uniqBy
+    sample, sortBy, uniqBy
 } = _
 
 const {
-    sleep, getDeep, iterate, setDeep
+    sleep, getDeep, iterate, setDeep, DeepIterate
 } = require('vz-utils')
 
 const pluralize = require('pluralize')
@@ -97,6 +97,53 @@ class Scroid {
             params: {apiToken}
         })
 
+        this.iterate = new DeepIterate({
+            schema: {
+                project: {
+                    document: {
+                        segment: {
+                            target: true
+                        }
+                    }
+                }
+            },
+            getAll: {
+                projects: async ({projectFilter}) => 
+                    isEqual(keys(projectFilter), ['name']) ?
+                        [await this.getProject(projectFilter.name)] :
+                        await this.getProjects(),
+                documents: async ({project, multilingual}) => {
+                    let {documents} = project
+                    
+                    if (multilingual) {
+
+                        documents = uniqBy(documents, 'documentId')
+                        for (let document of documents) {
+                            for (let key of [
+                                'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
+                            ]) {
+                                delete document[key]
+                            }
+                        }
+                        
+
+                    }
+
+                    return documents
+                },
+                segments: async ({document, segmentFilter, multilingual}) => 
+                    await this.getSegments(document, {filters: segmentFilter, multilingual})
+            },
+            log: {
+                project: 'name',
+                document: document => `${document.name} (${document.targetLanguage})`,
+                segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
+                target: target => `${target.language} → ${target.text}`
+            }
+        })
+
+
+        
     }
 
     /* Iterators */
@@ -843,7 +890,9 @@ class Scroid {
         let ranges = this.ranges = []
     
         let endSegmentNumber, range, wordsCount
-    
+
+        segments = sortBy(segments, 'number')
+        
         for (let i = 0; i < segments.length; i++) {
     
             let segment = segments[i]

@@ -2,7 +2,7 @@ const _ = require('lodash')
 const {
     assign, capitalize, filter, find, flatten, groupBy, keyBy, last, 
     min, maxBy, minBy, map, mapKeys, pick, pull, pullAt, orderBy, 
-    reject, remove, reverse, round, sumBy, uniqBy
+    reject, remove, reverse, round, sumBy, uniqBy, values
 } = _
 
 const Diff = require('diff')
@@ -63,23 +63,32 @@ async function main() {
                 // project => projectNames.includes(project.name),
                 {name: 'Publisher Account Client'},
             documentFilter: 
-                document => document.name.match(/translate-sb/),
+                document => 
+                    document.name.match(/translate-sb/),
+                    // !document.targetLanguage.match(/de|ko/),
             // document => !document.targetLanguage.match(/ru|en-US/) && document.name.match(/1076/),
             //  {
             //     let stage = last(document.workflowStages)
             //     return stage.progress < 100
             // },
-            // documentFilter: {targetLanguage: 'es'},
-            // stageNumber: 2
+            // stageNumber: 2,
+            targetFilter: {isConfirmed: false},
+            // multilingual: true,
             end: null
         }
 
+        await scroid.iterate.targets(filters, () => {})
+
+        return 
+
         // let project = await go().createProject()
         // await go().pretranslateWithAnObject()
-        await scroid.assignFreelancers(filters, {mode: 'rocket', teamName: 'default'})
+        // await scroid.assignFreelancers(filters, {mode: 'rocket', teamName: 'default'})
         // await go().assignUnique(filters, 'proofreaders')
         // let pendingJobs = await go().getPendingJobs()
         // scroid.save({pendingJobs})
+
+        await go().assignIdenticalSegments()
 
         // await go().joinByContext()
 
@@ -331,6 +340,34 @@ async function main() {
 
 
                 return pendingJobs
+
+            },
+
+            async assignIdenticalSegments() {
+
+                await scroid.iterateDocuments(filters, async ({document}) => {
+
+                    let segmentHash = {}
+
+                    let segments = await scroid.getSegments(document)
+
+                    for (let segment of segments) {
+                        let {source} = segment
+                        for (let target of segment.targets) {
+                            if (!target.text)
+                                continue
+                            let key = stringify([source.text, target.language, target.text])
+                            if (!segmentHash[key]) segmentHash[key] = []
+                            segmentHash[key].push(segment)
+                        }
+                    }
+
+                    let identicalSegments = flatten(filter(values(segmentHash), pack => pack.length > 1))
+
+                    let ranges = scroid.getRanges(identicalSegments)
+                    await scroid.assignRanges(document, 1, ranges, {userId: '6852f318-0a52-4120-a368-71b7a7aba9ce'})
+
+                })
 
             },
 
