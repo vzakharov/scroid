@@ -15,7 +15,7 @@ const {
 } = _
 
 const {
-    sleep, getDeep, iterate, setDeep, DeepIterate
+    sleep, getDeep, iterate, setDeep, Select
 } = require('vz-utils')
 
 const pluralize = require('pluralize')
@@ -97,7 +97,7 @@ class Scroid {
             params: {apiToken}
         })
 
-        this.iterate = new DeepIterate({
+        this.select = new Select({
             schema: {
                 project: {
                     document: {
@@ -107,7 +107,7 @@ class Scroid {
                     }
                 }
             },
-            getAll: {
+            get: {
                 projects: async ({projectFilter}) => 
                     isEqual(keys(projectFilter), ['name']) ?
                         [await this.getProject(projectFilter.name)] :

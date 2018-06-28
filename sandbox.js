@@ -61,10 +61,10 @@ async function main() {
         let filters = {
             projectFilter: 
                 // project => projectNames.includes(project.name),
-                {name: 'Publisher Account Client'},
-            documentFilter: 
-                document => 
-                    document.name.match(/translate-sb/),
+                {name: 'new_PA_strings (2).json 180622'},
+            // documentFilter: 
+            //     document => 
+            //         document.name.match(/translate-sb/),
                     // !document.targetLanguage.match(/de|ko/),
             // document => !document.targetLanguage.match(/ru|en-US/) && document.name.match(/1076/),
             //  {
@@ -72,14 +72,16 @@ async function main() {
             //     return stage.progress < 100
             // },
             // stageNumber: 2,
-            targetFilter: {isConfirmed: false},
-            // multilingual: true,
+            targetFilter: 
+                // {isConfirmed: false},
+                target => target.text.match(/[a-z]/),
+            multilingual: true,
             end: null
         }
 
-        await scroid.iterate.targets(filters, () => {})
+        let items = await scroid.select.targets(filters)
 
-        return 
+        return items
 
         // let project = await go().createProject()
         // await go().pretranslateWithAnObject()
