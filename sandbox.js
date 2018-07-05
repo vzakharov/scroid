@@ -1,6 +1,6 @@
 const _ = require('lodash')
 const {
-    assign, capitalize, filter, find, flatten, groupBy, keyBy, last, 
+    assign, capitalize, filter, find, first, flatten, groupBy, keyBy, last, 
     min, maxBy, minBy, map, mapKeys, pick, pull, pullAt, orderBy, 
     reject, remove, reverse, round, sumBy, uniqBy, values
 } = _
@@ -60,57 +60,86 @@ async function main() {
             scroid.load('projects')
         let filters = {
             projectFilter: 
-                // project => projectNames.includes(project.name),
-                {name: 'new_PA_strings (2).json 180622'},
-            // documentFilter: 
-            //     document => 
-            //         document.name.match(/translate-sb/),
-                    // !document.targetLanguage.match(/de|ko/),
+                // project =>
+                    // projectNames.includes(project.name),
+                    // project.creationDate.match(/2018-06/),
+                {name: 'gdpr_user_data.yml 180705'},
+            documentFilter: 
+                document => 
+                    // document.name.match(/306/) &&
+                    !document.targetLanguage.match(/ru/),
             // document => !document.targetLanguage.match(/ru|en-US/) && document.name.match(/1076/),
             //  {
             //     let stage = last(document.workflowStages)
             //     return stage.progress < 100
             // },
             // stageNumber: 2,
-            targetFilter: 
-                // {isConfirmed: false},
-                target => target.text.match(/[a-z]/),
-            multilingual: true,
+            // multilingual: true,
             end: null
         }
 
-        let items = await scroid.select.targets(filters)
+        // let documents = await scroid.select.targets(filters)
 
-        return items
+        // return items
 
         // let project = await go().createProject()
         // await go().pretranslateWithAnObject()
-        // await scroid.assignFreelancers(filters, {mode: 'rocket', teamName: 'default'})
+        await scroid.assignFreelancers(filters, {mode: 'rocket', teamName: 'default'})
         // await go().assignUnique(filters, 'proofreaders')
         // let pendingJobs = await go().getPendingJobs()
         // scroid.save({pendingJobs})
 
-        await go().assignIdenticalSegments()
+        // await go().assignIdenticalSegments()
 
         // await go().joinByContext()
 
-        //await go().completeFinishedDocuments()
+        // await go().completeFinishedDocuments()
+
+        // await go().getComments()
+
+        // await go().writeSegmentTranslations()
 
         return
 
         function go() { return {
 
 
+            async addPayables() {
+
+                let payables = await csv2json().fromFile(folder.downloads + 'hourlies - data.csv')
+                remove(payables, {added: 'TRUE'})
+
+                for (let payable of payables) {
+
+                    let {
+                        calcDate, currency, freelancerCatUserId, jobDescription, pricePerUnit, unitsAmount
+                    } = payable
+
+                    calcDate = new Date(Date.parse(calcDate)).toISOString()
+
+                    let response = await scroid._marketplace.post('import/job', {
+                        calcDate, currency, freelancerCatUserId, jobDescription, pricePerUnit, unitsAmount,
+                        addToMyTeam: true, isForceImport: false, jobExternalId: '', serviceType: 'Misc',
+                        unitsType: 'hour', viaFreelancersLink: false
+                    })
+
+                    console.log(response)
+                }
+
+                return payables
+
+            },
+
             async createProject() {
 
-                let project = await scroid.createProject(folder.downloads + 'en.json', {
+                let project = await scroid.createProject(folder.downloads + 'gdpr_user_data.yml', {
                     sourceLanguage: 'en',
                     targetLanguages: 'de zh-Hans ko ja ru'.split(' '),
                     workflowStages: ['translation'],
-                    translationMemoryName: 'PA 1806 cleaned',
-                    // deadline: '2018-06-26T10:00:00.000Z',
-                    // includeDate: true
-                    name: 'PA 180626'
+                    translationMemoryName: 'Guides from EN',
+                    deadline: '2018-07-06T17:00:00.000Z',
+                    includeDate: true
+                    // name: 'PA 180626'
                 })
     
                 return project
@@ -182,7 +211,7 @@ async function main() {
             async completeFinishedDocuments() {
 
                 assign(filters, {
-                    documentFilter: document => last(document.workflowStages).progress == 100 && document.status != 'completed'
+                    documentFilter: document => first(document.workflowStages).progress == 100 && document.status != 'completed'
                 })
 
                 scroid.iterateDocuments(filters, async ({document}) => {
@@ -247,8 +276,7 @@ async function main() {
 
                 })
                 
-                let tsv = json2csv.parse(allComments, {delimiter})
-                fs.writeFileSync(folder.weebly + 'comments.tsv', tsv)
+                scroid.save({allComments})
 
             },
 
@@ -580,6 +608,29 @@ async function main() {
                 return changes
             },
 
+            async writeSegmentTranslations() {
+
+                let segmentTranslations = await scroid.getSegmentTranslations(filters)
+
+                scroid.save({segmentTranslations})
+            },
+
+            async writeReport() {
+                /* Create detailed project status report */
+                let projects = await scroid.getProjects()
+
+                projects = filter(projects, project => 
+                    project.creationDate.match(/2018-06/) ||
+                    projectNames.includes(project.name)
+                )
+                await scroid._writeReport({
+                    projects,
+                    path: 'C:/Users/asus/Documents/GitHub/Xsolla/Report 1806', 
+                    // excludeCompleted: true
+                })
+
+            },
+
             async writeTsv(data, path = folder.tmp) {
 
                 for (let key in data) {
@@ -687,21 +738,6 @@ async function main() {
 
         // return
 
-        // /* Create detailed project status report */
-        // let projects = await scroid.getProjects()
-        // let projectNames = [
-        //     'Login Widget',
-        //     'publisher-client'
-        // ]
-        // projects = filter(projects, project => 
-        //     project.name.includes('1806') ||
-        //     projectNames.includes(project.name)
-        // )
-        // await scroid._writeReport({
-        //     projects,
-        //     path: 'C:/Users/asus/Documents/GitHub/translationProjects/Xsolla/Report 1806', 
-        //     excludeCompleted: true
-        // })
     
     
     

@@ -11,7 +11,7 @@ const _ = require('lodash')
 const {
     assign, capitalize, clone, cloneDeep, filter, find, includes, 
     isArray, isEqual, keyBy, keys, last, map, omit, pick, remove,
-    sample, sortBy, uniqBy
+    reverse, sample, sortBy, uniqBy
 } = _
 
 const {
@@ -97,50 +97,100 @@ class Scroid {
             params: {apiToken}
         })
 
-        this.select = new Select({
-            schema: {
-                project: {
-                    document: {
-                        segment: {
-                            target: true
-                        }
+        this.schema = {
+            project: {
+                document: {
+                    segment: {
+                        target: true
                     }
                 }
-            },
-            get: {
-                projects: async ({projectFilter}) => 
-                    isEqual(keys(projectFilter), ['name']) ?
-                        [await this.getProject(projectFilter.name)] :
-                        await this.getProjects(),
-                documents: async ({project, multilingual}) => {
-                    let {documents} = project
-                    
-                    if (multilingual) {
+            }
+        }
 
-                        documents = uniqBy(documents, 'documentId')
-                        for (let document of documents) {
-                            for (let key of [
-                                'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
-                            ]) {
-                                delete document[key]
-                            }
+        this.fetch = {
+
+            projects: async ({projectFilter}) => 
+                isEqual(keys(projectFilter), ['name']) ?
+                    [await this.getProject(projectFilter.name)] :
+                    await this.getProjects(),
+        
+            documents: async ({project, multilingual}) => {
+                let {documents} = project
+                
+                if (multilingual) {
+        
+                    documents = uniqBy(documents, 'documentId')
+                    for (let document of documents) {
+                        for (let key of [
+                            'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
+                        ]) {
+                            delete document[key]
                         }
+                    }
+                    
+        
+                }
+        
+                return documents
+            },
+        
+            segments: async ({document, segmentFilter, multilingual}) => 
+                await this.getSegments(document, {filters: segmentFilter, multilingual})
+        }
+
+        this.log = {
+            project: 'name',
+            document: document => `${document.name} (${document.targetLanguage})`,
+            segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
+            target: target => `${target.language} → ${target.text}`
+        }
+
+        Select.process(this)
+
+        // this.select = new Select({
+        //     schema: {
+        //         project: {
+        //             document: {
+        //                 segment: {
+        //                     target: true
+        //                 }
+        //             }
+        //         }
+        //     },
+        //     get: {
+        //         projects: async ({projectFilter}) => 
+        //             isEqual(keys(projectFilter), ['name']) ?
+        //                 [await this.getProject(projectFilter.name)] :
+        //                 await this.getProjects(),
+        //         documents: async ({project, multilingual}) => {
+        //             let {documents} = project
+                    
+        //             if (multilingual) {
+
+        //                 documents = uniqBy(documents, 'documentId')
+        //                 for (let document of documents) {
+        //                     for (let key of [
+        //                         'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
+        //                     ]) {
+        //                         delete document[key]
+        //                     }
+        //                 }
                         
 
-                    }
+        //             }
 
-                    return documents
-                },
-                segments: async ({document, segmentFilter, multilingual}) => 
-                    await this.getSegments(document, {filters: segmentFilter, multilingual})
-            },
-            log: {
-                project: 'name',
-                document: document => `${document.name} (${document.targetLanguage})`,
-                segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
-                target: target => `${target.language} → ${target.text}`
-            }
-        })
+        //             return documents
+        //         },
+        //         segments: async ({document, segmentFilter, multilingual}) => 
+        //             await this.getSegments(document, {filters: segmentFilter, multilingual})
+        //     },
+        //     log: {
+        //         project: 'name',
+        //         document: document => `${document.name} (${document.targetLanguage})`,
+        //         segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
+        //         target: target => `${target.language} → ${target.text}`
+        //     }
+        // })
 
 
         
@@ -276,7 +326,7 @@ class Scroid {
     async iterateSegmentTargets(options, callback) {
 
         await this.iterateSegments(options, 
-            async ({iteratees}) => {
+            async iteratees => {
 
                 let {segment} = iteratees
                 let {targets} = segment
@@ -627,6 +677,14 @@ class Scroid {
         }    
     }
 
+    getAccounts({accounts} = {}) {
+        let {force} = accounts
+
+        if (!force) {
+
+        }
+    }
+
     async getClientId(name) {
         return find(
             await this._smartcat.clients(),
@@ -806,7 +864,7 @@ class Scroid {
         return {assignment, assignmentId}
     }
 
-    async getProductivityData(options) {
+    async getSegmentTranslations(options) {
 
         let getTmFactor = ({matchPercentage, saveType}) => 
             saveType == 6 ? 0 :
@@ -838,6 +896,8 @@ class Scroid {
             })
             console.log(stringify(last(data)))
         })
+
+        return data
     }
 
     async getProject(projectName) {
@@ -922,7 +982,7 @@ class Scroid {
 
         let segments = []
     
-        let start = 0, limit = 500
+        let start = 0, limit = 5000
 
         let params = {
             mode: 'manager'
@@ -1349,7 +1409,6 @@ class Scroid {
     }
 
 }
-
 
 
 for (let fileName of fs.readdirSync('./lib/properties')) {

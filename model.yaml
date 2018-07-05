@@ -1,0 +1,10 @@
+project:
+  hasMany: documents
+
+document:
+  belongsTo: project
+  hasMany: segments
+
+segment:
+  belongsTo: document
+  hasMany: targets
