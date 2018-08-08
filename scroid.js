@@ -9,7 +9,7 @@ const json2csv = require('json2csv')
 const _ = require('lodash')
 
 const {
-    assign, capitalize, clone, cloneDeep, filter, find, includes, 
+    assign, capitalize, clone, cloneDeep, filter, find, forEach, includes, 
     isArray, isEqual, keyBy, keys, last, map, omit, pick, remove,
     reverse, sample, sortBy, uniqBy
 } = _
@@ -59,12 +59,11 @@ class Scroid {
         return `=HYPERLINK("${link.url}", "${link.text}")`
     }
 
-
-
     load(what) { 
         let value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
-        if (value[this.accountName]) {
-            value = value[this.accountName]
+        let {account} = this
+        if (account && value[account.name]) {
+            value = value[account.name]
         }
         this[what] = value
         return value 
@@ -89,6 +88,7 @@ class Scroid {
             storageFolder: `./private/userStorage/${username}`
         })
 
+        this.load('settings')
         this.load('credentials')
 
         let {apiToken} = this.credentials.mixmax
@@ -120,11 +120,17 @@ class Scroid {
                 if (multilingual) {
         
                     documents = uniqBy(documents, 'documentId')
+
                     for (let document of documents) {
+                        let {documentId} = document
                         for (let key of [
                             'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
                         ]) {
                             delete document[key]
+                            document[pluralize(key)] = map(
+                                filter(project.documents, {documentId}),
+                                key
+                            )
                         }
                     }
                     
@@ -241,14 +247,25 @@ class Scroid {
                 asyncCallback,
                 getAll: () => {
                     let {documents} = project
+                    for (let document of documents)
+                        document.targetLanguageId = Number(document.targetLanguageId)
                     
                     if (multilingual) {
 
                         documents = uniqBy(documents, 'documentId')
                         for (let document of documents) {
+                            let {documentId} = document
                             for (let key of [
                                 'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
                             ]) {
+                                let monoDocuments = filter(project.documents, {documentId})
+                                if (monoDocuments.length == 1)
+                                    continue
+                                document.multilingual = true
+                                document[pluralize(key)] = map(
+                                    monoDocuments,
+                                    key
+                                )
                                 delete document[key]
                             }
                         }
@@ -310,7 +327,7 @@ class Scroid {
 
                 let {document} = iteratees
 
-                let segments = await this.getSegments(document, {filters: segmentFilter, multilingual})
+                let segments = await this.getSegments(document, segmentFilter, multilingual)
 
                 for (let segment of segments) {
                     await callback(assign(iteratees, {segment, segments}))
@@ -421,7 +438,7 @@ class Scroid {
                 if (mode == 'pinned') {
                     let documentIds = map(documents, 'id')
 
-                await this.smartcat.document.assignFromMyTeam(documentIds, stageNumber)
+                    await this.smartcat.document.assignFromMyTeam(documentIds, stageNumber)
                 } else {
 
                     let {targetLanguage, targetLanguageId, project} = documents[0]
@@ -441,11 +458,11 @@ class Scroid {
             } catch (error) {
                 let {response} = error
 
-                if (response && response.status == 500) {
+                if (response && (response.status == 500 || response.status == 400)) {
 
-                let {project, targetLanguageId} = documents[0]
-                let projectId = project.id
-                documentIds = map(documents, 'documentId')
+                    let {project, targetLanguageId} = documents[0]
+                    let projectId = project.id
+                    let documentIds = map(documents, 'documentId')
 
                     let assignmentId = await this._smartcat.workflowAssignments().start({documentIds, projectId, targetLanguageId})
                     let assignment = await this._smartcat.workflowAssignments(assignmentId).get()
@@ -558,14 +575,14 @@ class Scroid {
     }
 
     getNativeFilters(filters) {
-        let {confirmed, stage, changed, hasComments} = filters
-        for (let key of ['confirmed', 'stage', 'changed', 'hasComments']) {
+        let {confirmed, stageNumber, changed, hasComments} = filters
+        for (let key of ['confirmed', 'stageNumber', 'changed', 'hasComments']) {
             delete filters[key]
         }
         let nativeFilters = []
         
         if (confirmed != undefined) {
-            nativeFilters.push({name: 'confirmation', isConfirmed: confirmed, workflowStageNumber: stage})
+            nativeFilters.push({name: 'confirmation', isConfirmed: confirmed, workflowStageNumber: stageNumber})
         }
     
         if (changed) {
@@ -609,7 +626,7 @@ class Scroid {
             settings.name += ' ' + (new Date().toISOString()).replace(/^\d\d(\d+)-(\d+)-(\d+).*/, '$1$2$3')
         }
 
-        return await this.smartcat.project.create(file, settings)
+        return await this.smartcat.project().create(file, settings)
     }
 
     async downloadMyTeam() {
@@ -665,12 +682,17 @@ class Scroid {
                         tags,
                         text
                     })    
-                }    
+                }
                 
             } catch (error) {
-                if (!error.response) throw(error)
-                console.log(`\t${verb} failed for ${languageText} (error ${error.response.status})`)
-                continue
+                if (error.response) {
+                    console.log(`\t${verb} failed for ${languageText} (error ${error.response.status})`)
+                    continue
+                }
+                if (error.code == 'ETIMEDOUT') {
+                    return error.code
+                }
+                throw(error)
             }
 
             console.log(`\t${languageText}`)
@@ -796,27 +818,29 @@ class Scroid {
     
     }
 
-    async getFilterSetId(document, {nativeFilters, multilingual} = {}) {
+    async getFilterSetId(document, nativeFilters) {
 
-        let {targetLanguageId, documentId} = document
+        let {targetLanguageId, targetLanguageIds, documentId} = document
 
-        let targetLanguageIds = multilingual ? 
-            map(keys(document.project.targetLanguagesById), Number) :
-            [targetLanguageId]
+        if (!targetLanguageIds)
+            targetLanguageIds = [targetLanguageId]
 
         let languageFilter = {
             name: 'language',
             targetLanguageIds
         }
 
-        let filterSetId = (
-            await this.__smartcat.post(`Documents/${documentId}/SegmentsFilter`, 
-                [... nativeFilters, languageFilter], {params:
-                    {mode: 'manager', documentId}
-                })
-        ).data.id
+        let {id} = await this._smartcat.documents(documentId).segmentsFilter([
+            ... nativeFilters, languageFilter
+        ])
+        // (
+        //     await this.__smartcat.post(`Documents/${documentId}/SegmentsFilter`, 
+        //         [... nativeFilters, languageFilter], {params:
+        //             {mode: 'manager', documentId}
+        //         })
+        // ).data.id
 
-        return filterSetId
+        return id
     }
 
     async getDocuments(options) {
@@ -910,6 +934,35 @@ class Scroid {
     
     }
 
+    async _getProjects({account, projects}) {
+
+        let {name} = account
+        if (name != this.account.name) {
+            this.setAccount(name)
+        }
+
+        // Nb: projects is a function/hash (filter)
+        let params
+        let projectName = typeof projects != 'function' && projects.name
+        if (projectName) params = {projectName}
+
+        let decomposeDocumentId = compositeId => {
+            let [documentId, targetLanguageId] = compositeId.match(/(\d+)_(\d+)/).slice(1)
+            return {documentId, targetLanguageId}
+        }
+
+        let projects = map(
+            await this.smartcat.project().list(params), 
+            project => assign(new class Project{}(), project)
+        )
+
+        assign (this, {projects})
+    
+        return projects
+    
+    }
+
+
     async getProjects(params) {
 
         let decomposeDocumentId = compositeId => {
@@ -917,7 +970,7 @@ class Scroid {
             return {documentId, targetLanguageId}
         }
 
-        let projects = await this.smartcat.project.list(params)
+        let projects = await this.smartcat.project().list(params)
         
         for (let project of projects) {
             project.targetLanguagesById = {}
@@ -978,7 +1031,7 @@ class Scroid {
     
     }
 
-    async getSegments(document, {filters, multilingual} = {}) {
+    async getSegments(document, segmentFilter, multilingual) {
 
         let segments = []
     
@@ -988,9 +1041,10 @@ class Scroid {
             mode: 'manager'
         }
 
-        if (filters) {
-            let nativeFilters = this.getNativeFilters(filters)
-            let filterSetId = await this.getFilterSetId(document, {nativeFilters, multilingual})
+        if (segmentFilter) {
+            segmentFilter = clone(segmentFilter)
+            let nativeFilters = this.getNativeFilters(segmentFilter)
+            let filterSetId = await this.getFilterSetId(document, nativeFilters)
             assign(params, {filterSetId})
         }
 
@@ -1026,7 +1080,7 @@ class Scroid {
             }
         }
     
-        return filter(segments, filters)
+        return filter(segments, segmentFilter)
         
     }
 
@@ -1219,8 +1273,9 @@ class Scroid {
     async pretranslateWith_(document, object, options) {
 
         let {
-            contextFormat, parseFilenames, convertNewLinesToTags, 
-            confirm, documentNames, editIfNonEmpty
+            contextFormat, parseFilenames, convertNewLinesToInline, convertNewLinesToTags, 
+            confirm, documentNames, editIfConfirmed, editIfNonEmpty, 
+            takeIdFromComments
         } = assign({documentNames: []}, options)
 
         if (documentNames.includes(document.name)) return
@@ -1230,8 +1285,12 @@ class Scroid {
 
         let documentNameWithoutLanguage = parseFilenames && document.name.match(/\w+\.(.+)$/)[1]
 
-        let filters = {confirmed: false, stage: 1}
-        let segments = await this.getSegments(document, {filters, multilingual: true})
+        let filters
+
+        if (!editIfConfirmed)
+            filters = {confirmed: false, stageNumber: 1}
+
+        let segments = await this.getSegments(document, filters, true)
 
         let languageFilesMissing = []
 
@@ -1249,11 +1308,25 @@ class Scroid {
                     if (target.text) continue
                 }
 
-                if (target.isConfirmed) {
+                if (!editIfConfirmed && target.isConfirmed) {
                     continue
                 }
 
-                let string = segment.localizationContext[0]
+                let string
+
+                if (!takeIdFromComments) {
+                    string = segment.localizationContext[0]
+                } else {
+                    let {documentId} = document
+                    let {items} = await this._smartcat.topics(segment.topicId).comments({
+                        documentId,
+                        topicType: 'SEGMENT',
+                        start: 0, limit: 100
+                    })
+
+                    string = find(items, item => item.text.match(/^\/[\w\d._]+$/)).text.slice(1)
+                }
+
                 let id = string
                 let text = object
     
@@ -1270,9 +1343,10 @@ class Scroid {
                 if (contextFormat == 'json') {
                     let match = string.match(/^\['(.*)'\]$/)
                     id = match ? match[1] : string
-                    text = object[id][language]
                 }
                 
+                text = object[id][language]
+
                 if (contextFormat == 'yaml') {
                     let path = id.split('/').slice(1)
                     for (let stop of path) {
@@ -1282,14 +1356,20 @@ class Scroid {
                             continue targetLoop
                         }
                     }
+                    text = text[language]
                 }
     
-                if (!text) continue
+                if (!text || text == target.text) 
+                    continue
 
                 assign(target, {text})
 
                 if (convertNewLinesToTags) {
                     this.convertToTagsInTarget(target)    
+                }
+
+                if (convertNewLinesToInline && target.text.match('\n')) {
+                    target.text = target.text.replace(/\n/g, '\\n')
                 }
 
                 target.changed = true
@@ -1307,34 +1387,28 @@ class Scroid {
                 continue
             }
 
-            let tryEdit = async () => {
-                try {
-                    await this.editSegment_(document, segment, {confirm})
-                } catch(error) {
-                    console.log(error)
-                    await sleep(2000)
-                    process.nextTick(tryEdit)
-                }
-            }
-
-            await tryEdit()
+            await this.editSegment_(document, segment, {confirm})
 
         }
     }
 
-    setAccount(accountName) {
-        let smartcatCredentials = this.credentials.smartcat
+    setAccount(name) {
+        let accounts = this.load('accounts')
 
-        if (!accountName) accountName = smartcatCredentials.defaultAccount
-        assign(this, {accountName})
+        if (!name) name = this.settings.defaultAccount
+        if (!name) name = accounts[0].name
 
-        let {auth, server} = smartcatCredentials.accounts[accountName]
+        let account = find(accounts, {name})
+        assign(this, {account})
+
+        let {auth, server} = account
         this.subDomain = domainByServer[server]
         let {subDomain} = this
 
         this.smartcat = new Smartcat({auth, subDomain}).methods
-        
-        let session = smartcatCredentials.sessionsByServer[server]
+
+        let {credentials} = this        
+        let session = credentials.smartcat.sessionsByServer[server]
         let cookie = `session-${serverSessionSuffix[server]}=${session}`
 
         let _defaults = {
@@ -1364,9 +1438,13 @@ class Scroid {
         this._marketplace = Axios.create({
             baseURL: `https://${subDomain}marketplace.smartcat.ai/api/v1`,
             headers: {
-                authorization: `Bearer ${smartcatCredentials.marketplaceTokensByServer[server]}`
+                authorization: `Bearer ${credentials.smartcat.marketplaceTokensByServer[server]}`
             }
         })
+    }
+
+    unassignFreelancers(filter) {
+
     }
 
     convertToTagsInTarget(target, regex = /[\n\t]/) {
