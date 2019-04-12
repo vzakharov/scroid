@@ -8,7 +8,8 @@ const {
 const Diff = require('diff')
 const vz = require('vz-utils')
 const {
-    deepFor, iterate, loadYamls, loadYamlsAsArray, getDiff, setDeep, renameRecursively
+    deepFor, iterate, loadYamls, loadYamlsAsArray, matchesFilter,
+    getDiff, setDeep, renameRecursively
 } = vz
 
 const json2csv = require('json2csv')
@@ -32,104 +33,53 @@ async function main() {
 
         let scroid = new Scroid(username)
 
-        let config = scroid.load('config')
-        let {
-            smartcatAccountName,
-            action, documentRegexps, stageNumber, folders
-        } = config
+        let autorun = scroid.import('autorun')
+        let {accountName, namespace} = autorun
+        let configs = scroid.import(`config.${accountName}.${namespace}`, 'config')
+        if (!Array.isArray(configs)) configs = [configs]
 
-        let options = config[action]
-
-        scroid.setAccount(smartcatAccountName)
-
-        let {projectNames} = config
-
-        let projectFilter = projectNames.length == 0 ?
-            project => 1 :
-            projectNames.length == 1 ?
-                {name: projectNames[0]} :
-                project => projectNames.includes(project.name)
-
-
-        let doFilter = (object, regexps) => {
-            for (let key in regexps) {
-                // Todo: let check other attributes
-                if (key == 'stage') {
-                    let {stageNumber} = config
-                    let subObject = find(object.workflowStages, {stageNumber})
-                    let subRegexps = regexps[key]
-                    if (!doFilter(subObject, subRegexps))
-                        return false
-                } else {
-                    let regexp = regexps[key]
-                    let negative = false
-                    if (regexp.not) {
-                        regexp = regexp.not
-                        negative = true
-                    }
-                    if (!!object[key].match(regexp) == negative)
-                        return false
-                }
+        for (let config of configs) {
+            let {
+                account,
+                action, documentRegexps, stageNumber, folders, noInvitations,
+                projectRegexps
+            } = config
+    
+            let options = config[action] || config['options'] || {}
+    
+            scroid.setAccount(accountName)
+    
+            let {projectNames} = config
+    
+            if (!projectNames) projectNames = []
+    
+            let projectFilter = projectNames.length == 0 ?
+                project => (projectRegexps ? matchesFilter(project, projectRegexps) : 1 ) :
+                (projectNames.length == 1 ?
+                    {name: projectNames[0]} :
+                    project => projectNames.includes(project.name))
+    
+    
+    
+    
+            let documentFilter = documentRegexps ? 
+                document => matchesFilter(document, documentRegexps) 
+                : undefined
+    
+            let filters = {
+                projectFilter, documentFilter, stageNumber, noInvitations
             }
-            return true
-        } 
-
-        let documentFilter = documentRegexps ? 
-            document => doFilter(document, documentRegexps) 
-            : undefined
-
-        let filters = {
-            projectFilter, documentFilter, stageNumber
+    
+            await scroid[action](options, filters)
         }
+
         
-        /* let filters = {
-            projectFilter: 
-            //     {name: 'Developer Docs Manual'}
-            project =>
-                    projectNames.includes(project.name),
-                    // project.creationDate.match(/2018-06/),
-            documentFilter: 
-                document => 
-            //         document.name.match(/_en/)
-                    document.targetLanguage.match(/ja/)
-            //         last(document.workflowStages).progress < 100
-            // document => !document.targetLanguage.match(/ru|en-US/) && document.name.match(/1076/),
-            //  {
-            //     let stage = last(document.workflowStages)
-                // return stage.progress < 100
-            // },
-            , stageNumber: 1
-            // multilingual: true
-        } */
-
-        await scroid[action](options, filters)
-        
-        // let documents = await scroid.select.targets(filters)
-
-        // return items
-
-        // let project = await go().createProject()
-        // await go().pretranslateByIds()
-        // await scroid.assignFreelancers(filters, {mode: 'rocket', teamName: 'fallback'})
-        // await go().assignUnique(filters, 'proofreaders')
-
-        // await go().assignIdenticalSegments()
-
-        // await go().joinByContext()
-
-        // await go().completeFinishedDocuments()
-
-        // await go().getComments()
-
-        // await go().writeSegmentTranslations()
-
-        // await go().addPayables()
-
+ 
         function go() { return {
 
 
             async assignDocuments({stage}) {
-                let teamTemplate = scroid.load('teamTemplates').default
+                let teamTemplate = scroid.import('teamTemplates').default
                 let assigneesByLanguage = await scroid.getTeam(teamTemplate, {includeEmails: true})
 
                 scroid.iterateDocuments(filters, async ({project, document}) => {
@@ -147,7 +97,7 @@ async function main() {
             async assignUnique(filters, team) {
 
                 let {stageNumber} = filters
-                let teamTemplate = scroid.load('teams')[team]
+                let teamTemplate = scroid.import('teams')[team]
                 assigneesByLanguage = await scroid.getTeam(teamTemplate)
     
                 await scroid.iterateDocuments(filters, async ({document}) => {
@@ -174,7 +124,7 @@ async function main() {
 
             async emailAssignees() {
 
-                let clientName = capitalize(smartcatAccountName)
+                let clientName = capitalize(accountName)
                 let emails = await scroid._getEmails({project, documents, stage: 1}, {returnHash: false})
                 let documentNameForMixmax = 'login-319'
                 let sequenceName = `Introducing Chau`
@@ -216,7 +166,7 @@ async function main() {
 
                 await scroid.iterateDocuments(filters, async ({project, document}) => {
 
-                    let {assignment} = await scroid.getAssignmentData(project, document)
+                    let {assignment} = await scroid.getAssignmentInfo(project, document)
                     for (let stage of filter(assignment.workflowStages, stageFilter)) {
                         return
                     }
