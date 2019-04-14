@@ -1,6 +1,6 @@
 const _ = require('lodash')
 const {
-    assign, capitalize, clone, filter, find, first, flatten, groupBy, keyBy, last, 
+    assign, capitalize, clone, filter, find, first, flatten, groupBy, keyBy, keys, last, 
     min, maxBy, minBy, map, mapKeys, pick, pull, pullAt, orderBy, 
     reject, remove, reverse, round, sumBy, uniqBy, values
 } = _
@@ -33,44 +33,46 @@ async function main() {
 
         let scroid = new Scroid(username)
 
-        let autorun = scroid.import('autorun')
+        let autorun = scroid.load('autorun')
         let {accountName, namespace} = autorun
-        let configs = scroid.import(`config.${accountName}.${namespace}`, 'config')
+        let configs = scroid.load(`config.${accountName}.${namespace}`, 'config')
         if (!Array.isArray(configs)) configs = [configs]
 
         for (let config of configs) {
-            let {
-                account,
-                action, documentRegexps, stageNumber, folders, noInvitations,
-                projectRegexps
-            } = config
+            // let {
+            //     account,
+            //     action, documentRegexps, stageNumber, folders, noInvitations,
+            //     projectRegexps
+            // } = config
     
-            let options = config[action] || config['options'] || {}
+            let action = keys(config)[0]
+
+            // let options = config[action] || config.options || {}
     
-            scroid.setAccount(accountName)
+            await scroid.setAccount(accountName)
     
-            let {projectNames} = config
+            let {filters, options} = config
+            // let {projectNames, filters} = config[action]
+
     
-            if (!projectNames) projectNames = []
+            // if (!projectNames) projectNames = []
     
-            let projectFilter = projectNames.length == 0 ?
-                project => (projectRegexps ? matchesFilter(project, projectRegexps) : 1 ) :
-                (projectNames.length == 1 ?
-                    {name: projectNames[0]} :
-                    project => projectNames.includes(project.name))
+            // let projectFilter = projectNames.length == 0 ?
+            //     project => (projectRegexps ? matchesFilter(project, projectRegexps) : 1 ) :
+            //     (projectNames.length == 1 ?
+            //         {name: projectNames[0]} :
+            //         project => projectNames.includes(project.name))
     
+            // let documentFilter = documentRegexps ? 
+            //     document => matchesFilter(document, documentRegexps) 
+            //     : undefined
     
+            // let filters = {
+            //     projectFilter, documentFilter, stageNumber, noInvitations
+            // }
     
-    
-            let documentFilter = documentRegexps ? 
-                document => matchesFilter(document, documentRegexps) 
-                : undefined
-    
-            let filters = {
-                projectFilter, documentFilter, stageNumber, noInvitations
-            }
-    
-            await scroid[action](options, filters)
+            // await scroid[action](options, filters)
+            await scroid[action](config)
         }
 
         
@@ -79,7 +81,7 @@ async function main() {
 
 
             async assignDocuments({stage}) {
-                let teamTemplate = scroid.import('teamTemplates').default
+                let teamTemplate = scroid.load('teamTemplates').default
                 let assigneesByLanguage = await scroid.getTeam(teamTemplate, {includeEmails: true})
 
                 scroid.iterateDocuments(filters, async ({project, document}) => {
@@ -97,7 +99,7 @@ async function main() {
             async assignUnique(filters, team) {
 
                 let {stageNumber} = filters
-                let teamTemplate = scroid.import('teams')[team]
+                let teamTemplate = scroid.load('teams')[team]
                 assigneesByLanguage = await scroid.getTeam(teamTemplate)
     
                 await scroid.iterateDocuments(filters, async ({document}) => {

@@ -7,6 +7,9 @@ const writeYaml = require('write-yaml')
 const json2csv = require('json2csv')
 const csv2json = require('csvtojson')
 
+const {promisify} = require('util')
+// const setImmediatePromise = promisify(setImmediate)
+
 const l10n = require('l10n-vz')
 const {
     createTableFromHashFiles
@@ -16,8 +19,8 @@ const _ = require('lodash')
 
 const {
     assign, capitalize, clone, compact, concat, cloneDeep, filter, find, first, forEach, 
-    groupBy, includes, isArray, isEqual, keyBy, keys, last, map, mapKeys, mapValues, omit, pick, remove,
-    reverse, round, sample, sortBy, uniqBy
+    groupBy, includes, isArray, isFunction, isEqual, isString, keyBy, keys, last, map, mapKeys, mapValues, omit, 
+    pick, remove, reverse, round, sample, sortBy, uniqBy
 } = _
 
 const {
@@ -70,7 +73,7 @@ class Scroid {
     }
 
     // Todo: Load from tsv/csv
-    import(what, asWhat) { 
+    load(what, asWhat) { 
         let value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
         let {account} = this
         if (account && value[account.name]) {
@@ -83,7 +86,7 @@ class Scroid {
         return value 
     }
 
-    export(what) {
+    save(what) {
         for (let key in what) {
             let object = what[key]
             let path = [this.storageFolder, key].join('/')
@@ -104,8 +107,8 @@ class Scroid {
             storageFolder: `./private/userStorage/${username}`
         })
 
-        this.import('settings')
-        this.import('credentials')
+        this.load('settings')
+        this.load('credentials')
 
         let {apiToken} = this.credentials.mixmax
         this.mixmax = Axios.create({
@@ -220,6 +223,23 @@ class Scroid {
 
     /* Iterators */
 
+    prepareFilters(filters) {
+        for (let key in filters) {
+            let value = filters[key]
+            if (value && value._import) {
+                let {_import} = value
+                let array = this.load(_import.from)
+                let {what} = _import
+                if (!what)
+                    what = key
+                let items = uniqBy(map(array, what), 'id')
+                value = items
+            } else if (value && !isFunction(value) && !isArray(value) && !isString(value)) {
+                this.prepareFilters(value)
+            }
+        }
+    }
+
     async iterateSome({kind, filter, options, asyncCallback, getAll}) {
 
         if (!filter) filter = () => true
@@ -239,15 +259,23 @@ class Scroid {
 
     /** callback: async {project} => ... */
     async iterateProjects({filters, options}, asyncCallback) {
-        let {multilingual} = filters
+        this.prepareFilters(filters)
+        let {multilingual, loadViaAPI} = options || {}
         // let {projectFilter} = filters
         let projectFilter = filters.project
-        let getAll = isString(projectFilter.name) ?
-            async () => [await this.getProject(projectFilter.name)] :
-            async () => await this.getProjects()
+        let {name} = projectFilter
+        let getAll = //loadViaAPI ? (
+                isString(name) && name.match(/^[^^/]/) ?
+                    async () => [await this.getProject(name)] :
+                    async () => await this.getProjects()
+            // ) : (
+            //     isArray(projectFilter.id) ?
+            //         projectFilter.id :
+            //         [projectFilter.id]
+            // )
         await this.iterateSome({
             kind: 'project',
-            filter: project => matchesFilter(project, projectFilter, this),
+            filter: project => matchesFilter(project, projectFilter),
             options: {multilingual},
             asyncCallback,
             getAll
@@ -255,26 +283,10 @@ class Scroid {
     }
 
     /** callback: async ({document, project}) => ... */
-    async iterateDocuments({projectFilter, documentFilter, multilingual, noInvitations}, asyncCallback) {
+    async iterateDocuments({filters, options}, asyncCallback) {
 
-        let {noInvitations, multilingual} = options
-        
-        if (noInvitations) {
-            let oldAsyncCallback = asyncCallback
-            asyncCallback = async (options) => {
-                let {document, project} = options
-                let documentIds = [document.documentId]
-                let projectId = project.id
-                let {targetLanguageId} = document
-                let assignmentId = await this._smartcat.workflowAssignments().start({documentIds, projectId, targetLanguageId})
-                let assignment = await this._smartcat.workflowAssignments(assignmentId).get()
-                let {workflowStages} = assignment
-                let {freelancerInvitations} = workflowStages[0] //Todo: multi-stage
-                if (freelancerInvitations.length > 0)
-                    return false
-                return await oldAsyncCallback(options)
-            }
-        }
+        let {noInvitations, multilingual, loadViaAPI} = options
+        let {projectFilter, documentFilter} = filters
 
         await this.iterateProjects({projectFilter, multilingual}, async ({project}) => {
 
@@ -424,6 +436,7 @@ class Scroid {
 
             dateCompleted = new Date(Date.parse(dateCompleted)).toISOString()
 
+
             let response = await this._smartcat.jobs.external({
                 dateCompleted, currency, executiveUserId, jobDescription, pricePerUnit, unitCount, unitType,
                 serviceType: 'Misc'
@@ -501,15 +514,15 @@ class Scroid {
             stageNumber: 1
         }, filters)
 
-        let documentsByLanguageAndProjectName = await this.getDocumentsByLanguageAndProjectName(filters)
+        let documentsByLanguageAndProjectId = await this.getDocumentsByLanguageAndProjectId(filters)
 
         let assigneesByLanguage
         if (mode == 'rocket') {
-            let teamTemplate = this.import('teams')[teamName]
+            let teamTemplate = this.load('teams')[teamName]
             assigneesByLanguage = await this.getTeam(teamTemplate)
         }
 
-        await iterate(documentsByLanguageAndProjectName, 2, async (documents) => {
+        await iterate(documentsByLanguageAndProjectId, 2, async (documents) => {
             try {
                 let documentIds = map(documents, 'documentId')
                 let {targetLanguage, targetLanguageId, project} = documents[0]
@@ -630,7 +643,7 @@ class Scroid {
         let replacements = reverse(
             sortBy(
                 map(
-                    this.import('replacements'), 
+                    this.load('replacements'), 
                     (to, from) => ({from, to})
                 ), 
                 'from.length'
@@ -841,7 +854,7 @@ class Scroid {
 
     async editProject(options, filters) {
         let {tmName, glossaryName, mtEngineSettings, markupPlaceholders} = options
-        let resources = this.import('resources')
+        let resources = this.load('resources')
         let {translationMemories} = resources
         let pretranslateRules = options.pretranslate
         if (pretranslateRules) {
@@ -974,45 +987,44 @@ class Scroid {
             } 
         })
 
-        this.export({termsMatchingRegexp})
+        this.save({termsMatchingRegexp})
     }
 
     async getDocumentsWithoutInvitations(options, filters) {
         let documentsWithoutInvitations = []
+        let apiCalls = []
 
         await this.iterateProjects({filters}, async ({project}) => {
             let documents = filter(project.documents, filters.documentFilter)
-            let team = await this._smartcat.projects(project.id).team()
-            let {executivesByJobStatus} = team
-            for (let executivesByThisJobStatus of executivesByJobStatus) {
-                let {executives} = executivesByThisJobStatus
-                for (let executive of executives) {
-                    let {jobs} = executive
-                    let {targetLanguageId} = executive
-                    targetLanguageId = targetLanguageId.toString()
-                    for (let job of jobs) {
-                        let {documentId} = job
-                        remove(documents, {
-                            documentId,
-                            targetLanguageId
-                        })
+            apiCalls.push(
+                this._smartcat.projects(project.id).team().then(team => {
+                    let {executivesByJobStatus} = team
+                    for (let executivesByThisJobStatus of executivesByJobStatus) {
+                        let {executives} = executivesByThisJobStatus
+                        for (let executive of executives) {
+                            let {jobs} = executive
+                            let {targetLanguageId} = executive
+                            targetLanguageId = targetLanguageId.toString()
+                            for (let job of jobs) {
+                                let {documentId} = job
+                                remove(documents, {
+                                    documentId,
+                                    targetLanguageId
+                                })
+                            }
+                        }
                     }
-                }
-            }
-            for (let document of documents) {
-                // let {valuesToSave} = options
-                if (options.valuesToSave)
-                    document = pick(document, options.valuesToSave)
-                documentsWithoutInvitations.push(document)
-            }
-            // let documentNames = mapValues(
-            //     groupBy(documents, 'name'),
-            //     documentsWithThatName => map(documentsWithThatName, 'targetLanguage')
-            // )
-            // documentsWithoutInvitations[project.name] = documentNames
-            this.export({documentsWithoutInvitations})
+                    for (let document of documents) {
+                        if (options.valuesToSave)
+                            document = pick(document, options.valuesToSave)
+                        documentsWithoutInvitations.push(document)
+                    }
+                    this.save({documentsWithoutInvitations})    
+                })
+            )
         })
 
+        await Promise.all(apiCalls)
         return documentsWithoutInvitations
     }
 
@@ -1054,14 +1066,14 @@ class Scroid {
 
         })
         
-        this.export({allComments})
+        this.save({allComments})
 
     }
 
     /** identifier: {name, userId} */
     async getContact(filter, force) {
 
-        this.import('contacts')
+        this.load('contacts')
         let {contacts} = this
         let contact = find(contacts, filter)
 
@@ -1092,7 +1104,7 @@ class Scroid {
             }
             
 
-            this.export({contacts})
+            this.save({contacts})
         }
     
 
@@ -1281,7 +1293,7 @@ class Scroid {
                 words: document.wordsCount,
                 targetLanguage: document.targetLanguage
             })
-            this.export({documentWordcounts})
+            this.save({documentWordcounts})
         })
 
         return documentWordcounts
@@ -1355,7 +1367,7 @@ class Scroid {
                     progress: progress
                 })
                 
-                this.export({pendingJobs})
+                this.save({pendingJobs})
             }
 
         })
@@ -1404,14 +1416,14 @@ class Scroid {
     }
 
 
-    async getProjects(params) {
+    async getProjects(args) {
 
         let decomposeDocumentId = compositeId => {
             let [documentId, targetLanguageId] = compositeId.match(/(^.+)_(\d+)/).slice(1)
             return {documentId, targetLanguageId}
         }
 
-        let projects = await this.smartcat.project().list(params)
+        let projects = await this.smartcat.project().list(args)
         
         for (let project of projects) {
             project.targetLanguagesById = {}
@@ -1435,6 +1447,7 @@ class Scroid {
             }
         }
     
+        assign(this, {projects})
         return projects
     
     }
@@ -1557,16 +1570,16 @@ class Scroid {
 
     }
 
-    async getDocumentsByLanguageAndProjectName(filters) {
+    async getDocumentsByLanguageAndProjectId(filters) {
 
-        let documentsByLanguageAndProjectName = {}
+        let documentsByLanguageAndProjectId = {}
 
         await this.iterateDocuments(filters, ({document, project}) => {
-            let documents = getDeep(documentsByLanguageAndProjectName, [document.targetLanguage, project.name], [])
+            let documents = getDeep(documentsByLanguageAndProjectId, [document.targetLanguage, project.id], [])
             documents.push(document)
         })
 
-        return documentsByLanguageAndProjectName
+        return documentsByLanguageAndProjectId
     }
 
     async getTeam(teamTemplate, {includeEmails} = {}) {
@@ -1574,7 +1587,7 @@ class Scroid {
         let assigneesByLanguage = {}
         let assignees = []
         let smartcatTeam = await this.downloadMyTeam()
-        this.export({smartcatTeam})
+        this.save({smartcatTeam})
     
         for (let languageKey in teamTemplate) {
             let languages = languageKey.split(',')
@@ -1885,8 +1898,8 @@ class Scroid {
         }
     }
 
-    setAccount(name) {
-        let accounts = this.import('accounts')
+    async setAccount(name) {
+        let accounts = this.load('accounts')
 
         if (!name) name = this.settings.defaultAccount
         if (!name) name = accounts[0].name
@@ -1898,11 +1911,14 @@ class Scroid {
         this.subDomain = domainByServer[server]
         let {subDomain} = this
 
-        this.smartcat = new Smartcat({auth, subDomain}).methods
+        this.smartcat = new Smartcat({auth, subDomain})
 
         let {credentials} = this        
-        let session = credentials.smartcat.sessionsByServer[server]
-        let cookie = `session-${serverSessionSuffix[server]}=${session}`
+
+        let {username, password} = credentials.smartcat.login
+
+        let session = this.credentials.smartcat.sessionsByServer[server]
+        let cookie = `session-${serverSessionSuffix[server]}=${session}`    
 
         let _defaults = {
             baseURL: `https://${subDomain}smartcat.ai/api/`,
@@ -1910,7 +1926,55 @@ class Scroid {
         }
 
         this.__smartcat = Axios.create(_defaults)
-        this._smartcat = new _Smartcat({cookie, subDomain}).methods
+
+        this._smartcat = new _Smartcat({cookie, subDomain})
+
+        let {_smartcat} = this
+
+        // _smartcat._beforeExecute = async () => {
+        //     let {headers} = this._axios
+        //     if (!headers.cookie) {
+        //         headers.cookie = await this.auth.signInUser(username, password)
+        //     }
+        // }
+    
+        _smartcat._onError = async ({tryExecute, stem, error, resolve, reject}) => {
+            let {response, code} = error
+            if (response) {
+                let {status} = response
+                if (status == 500) {
+                    return  //Todo: add more adequate processing
+                } else if (status == 403) {
+                    while (stem._state.errorHandlingInProgress) {
+                        // console.log('Relogin in progress, waiting...')
+                        await promisify(setImmediate)()
+                    }
+                    this.load('credentials')
+                    let {cookie} = error.request._headers
+                    let newCookie = stem._axios.defaults.headers.cookie
+                    if (cookie != newCookie) {
+                        console.log('Cookie has changed; trying with the new one...')
+                        cookie = newCookie
+                    } else {
+                        console.log('Trying to relogin...')
+                        stem._state.errorHandlingInProgress = true
+                        cookie = await _smartcat.auth.signInUser(username, password).cookie
+                        credentials.smartcat.sessionsByServer[server] = cookie.match(/id=.*/)[0]
+                        this.save({credentials})
+                        assign(stem._axios.defaults.headers, {cookie})
+                        await _smartcat.account.change(auth.username)
+                        delete stem._state.errorHandlingInProgress
+                    }
+                    resolve(new Promise(tryExecute))                    
+                } else
+                    reject(error)
+            } else {
+                if (code == 'ETIMEDOUT') {
+                    console.log('Timed out. Trying again...')
+                    resolve(new Promise(tryExecute))
+                }    
+            }
+        }    
 
         this._editor = function (document, options = {}) {
             let {exclude} = options
