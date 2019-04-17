@@ -1,6 +1,6 @@
 const _ = require('lodash')
 const {
-    assign, capitalize, clone, filter, find, first, flatten, groupBy, keyBy, keys, last, 
+    assign, capitalize, clone, filter, find, first, flatten, groupBy, isString, keyBy, keys, last, 
     min, maxBy, minBy, map, mapKeys, pick, pull, pullAt, orderBy, 
     reject, remove, reverse, round, sumBy, uniqBy, values
 } = _
@@ -35,44 +35,25 @@ async function main() {
 
         let autorun = scroid.load('autorun')
         let {accountName, namespace} = autorun
+
+        await scroid.setAccount(accountName)
+
         let configs = scroid.load(`config.${accountName}.${namespace}`, 'config')
         if (!Array.isArray(configs)) configs = [configs]
 
         for (let config of configs) {
-            // let {
-            //     account,
-            //     action, documentRegexps, stageNumber, folders, noInvitations,
-            //     projectRegexps
-            // } = config
     
-            let action = keys(config)[0]
+            let action, args
+            if (isString(config)) {
+                action = config
+            } else {
+                action = keys(config)[0]
+                args = config[action]
+            }
 
-            // let options = config[action] || config.options || {}
-    
-            await scroid.setAccount(accountName)
-    
-            let {filters, options} = config
-            // let {projectNames, filters} = config[action]
+            console.log(assign(new class Action{}, {action, args}))
 
-    
-            // if (!projectNames) projectNames = []
-    
-            // let projectFilter = projectNames.length == 0 ?
-            //     project => (projectRegexps ? matchesFilter(project, projectRegexps) : 1 ) :
-            //     (projectNames.length == 1 ?
-            //         {name: projectNames[0]} :
-            //         project => projectNames.includes(project.name))
-    
-            // let documentFilter = documentRegexps ? 
-            //     document => matchesFilter(document, documentRegexps) 
-            //     : undefined
-    
-            // let filters = {
-            //     projectFilter, documentFilter, stageNumber, noInvitations
-            // }
-    
-            // await scroid[action](options, filters)
-            await scroid[action](config)
+            await scroid[action](args)
         }
 
         
