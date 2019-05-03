@@ -6,6 +6,7 @@ const readYaml = require('read-yaml')
 const writeYaml = require('write-yaml')
 const json2csv = require('json2csv')
 const csv2json = require('csvtojson')
+const readline = require('readline').createInterface({input: process.stdin, output: process.stdout})
 
 const {promisify} = require('util')
 // const setImmediatePromise = promisify(setImmediate)
@@ -18,13 +19,14 @@ const {
 const _ = require('lodash')
 
 const {
-    assign, capitalize, clone, compact, concat, cloneDeep, filter, find, first, forEach, 
-    groupBy, includes, isArray, isFunction, isEqual, isString, keyBy, keys, last, map, mapKeys, mapValues, 
-    noop, omit, pick, remove, reverse, round, sample, sortBy, toNumber, uniqBy
+    assign, capitalize, clone, compact, concat, cloneDeep, filter, find, first, flattenDeep, forEach, 
+    get, groupBy, includes, isArray, isFunction, isEqual, isString, keyBy, keys, last, 
+    map, mapKeys, mapValues, merge, noop, omit, pick, remove, reverse, round, sample, sortBy, sumBy, 
+    toNumber, uniqBy, values
 } = _
 
 const {
-    sleep, getDeep, iterate, setDeep, Select, matchesFilter, renameKeys
+    AsyncIterable, sleep, getDeep, iterate, setDeep, Select, matchesFilter, renameKeys
 } = require('vz-utils')
 
 const pluralize = require('pluralize')
@@ -41,7 +43,31 @@ const serverSessionSuffix = {
 
 const {stringify} = JSON
 
-class Scroid {
+class Scroid extends AsyncIterable {
+
+    async fetch(what, args) {
+        let {
+            project, document, options
+        } = args
+
+        switch(what) {
+            case 'projects': return await this.getProjects()
+    
+            case 'segments': return await this.getSegments(document, {filters: options.filters})
+    
+            // Todo: merge with document.workflowStages
+            case 'freelancerInvitations': // fallthrough
+            case 'documentStages':
+            // case 'assignmentStages':
+                let {workflowStage} = args
+                let {workflowStages} = await this._smartcat.workflowAssignments(
+                    project.id, [document.documentId], document.targetLanguageId
+                ).info()
+                merge(document.workflowStages, workflowStages)
+                return workflowStage[what]
+        }
+
+    }
 
     link({project, document, segment}) {
         let domain = `https://${this.subDomain}smartcat.ai`
@@ -67,17 +93,57 @@ class Scroid {
 
     }
 
+    async login(username, password) {
+        await this._smartcat.auth.signInUser(username, password)
+
+        assign(this, {
+            username,
+            storageFolder: `./private/userStorage/${username}`
+        })
+
+        this.load('settings')
+        this.load('credentials')
+
+        let {mixmax} = this.credentials
+
+        if (mixmax) {
+            let {apiToken} = this.credentials.mixmax
+            this.mixmax = Axios.create({
+                baseURL: 'https://api.mixmax.com/v1/',
+                params: {apiToken}
+            })    
+        }
+
+        this._smartcat = new _Smartcat(username)
+    }
+
+    async loginToServer(username, password, server) {
+        let {_smartcat} = this
+        let {credentials} = this
+        let response = await _smartcat.auth.signInUser(username, password)
+        let {cookie} = response
+        credentials.smartcat.sessionsByServer[server] = cookie.match(/id=.*/)[0]
+        this.dump({credentials})
+        assign(_smartcat._axios.defaults.headers, {cookie})
+        return response
+    }
+
     googleSheetLink(args) {
         let link = this.link(args)
         return `=HYPERLINK("${link.url}", "${link.text}")`
     }
 
     // Todo: Load from tsv/csv
-    load(what, asWhat) { 
-        let value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
-        let {account} = this
-        if (account && value[account.name]) {
-            value = value[account.name]
+    load(what, asWhat) {
+        let value
+        try {
+            value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
+            let {account} = this
+            if (account && value[account.name]) {
+                value = value[account.name]
+            }
+        } catch {
+            value = {}
         }
         if (!asWhat) {
             asWhat = what
@@ -86,21 +152,53 @@ class Scroid {
         return value 
     }
 
-    save(what) {
-        for (let key in what) {
-            let object = what[key]
+    dump(object, alias) {
+        if (isString(object)) {
+            let key = object
+            object = {}
+            object[key] = this[key]
+        }
+        if (isString(alias)) {
+            let newObject = {}
+            // Todo: multiple aliases for multiple objects
+            newObject[alias] = values(object)[0]
+            object = newObject
+        }
+        for (let key in object) {
+            let wug = object[key]
             let path = [this.storageFolder, key].join('/')
-            writeYaml.sync(path + '.yaml', object)
-            if (isArray(object)) {
-                if (object.length == 0)
+            writeYaml.sync(path + '.yaml', wug)
+            if (isArray(wug)) {
+                if (wug.length == 0)
                     continue
-                let tsv = json2csv.parse(object, {flatten: true, delimiter: '\t'})
+                let tsv = json2csv.parse(wug, {flatten: true, delimiter: '\t'})
                 fs.writeFileSync(path + '.tsv', tsv)
         }
     }
     }
     
     constructor(username) {
+
+        let schema = {
+            projects: {
+                documents: {
+                    segments: {
+                        targets: {}
+                    },
+                    workflowStages: {
+                        executives: {},
+                        freelancerInvitations: {},
+                        documentStages: {
+                            documentStageExecutives: {
+                                segmentRanges: {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        super(schema)
 
         assign(this, {
             username,
@@ -116,109 +214,16 @@ class Scroid {
             params: {apiToken}
         })
 
-        this.schema = {
-            project: {
-                document: {
-                    segment: {
-                        target: true
-                    }
-                }
-            }
-        }
-
-        this.fetch = {
-
-            projects: async ({projectFilter}) => 
-                isEqual(keys(projectFilter), ['name']) ?
-                    [await this.getProject(projectFilter.name)] :
-                    await this.getProjects(),
-        
-            documents: async ({project, multilingual}) => {
-                let {documents} = project
-                
-                if (multilingual) {
-        
-                    documents = uniqBy(documents, 'documentId')
-
-                    for (let document of documents) {
-                        let {documentId} = document
-                        for (let key of [
-                            'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
-                        ]) {
-                            delete document[key]
-                            document[pluralize(key)] = map(
-                                filter(project.documents, {documentId}),
-                                key
-                            )
-                        }
-                    }
-                    
-        
-                }
-        
-                return documents
-            },
-        
-            segments: async ({document, segmentFilter, multilingual}) => 
-                await this.getSegments(document, {filters: segmentFilter, multilingual})
-        }
-
-        this.log = {
-            project: 'name',
-            document: document => `${document.name} (${document.targetLanguage})`,
-            segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
-            target: target => `${target.language} → ${target.text}`
-        }
-
-        Select.process(this)
-
-        // this.select = new Select({
-        //     schema: {
-        //         project: {
-        //             document: {
-        //                 segment: {
-        //                     target: true
-        //                 }
-        //             }
-        //         }
-        //     },
-        //     get: {
-        //         projects: async ({projectFilter}) => 
-        //             isEqual(keys(projectFilter), ['name']) ?
-        //                 [await this.getProject(projectFilter.name)] :
-        //                 await this.getProjects(),
-        //         documents: async ({project, multilingual}) => {
-        //             let {documents} = project
-                    
-        //             if (multilingual) {
-
-        //                 documents = uniqBy(documents, 'documentId')
-        //                 for (let document of documents) {
-        //                     for (let key of [
-        //                         'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
-        //                     ]) {
-        //                         delete document[key]
-        //                     }
-        //                 }
-                        
-
-        //             }
-
-        //             return documents
-        //         },
-        //         segments: async ({document, segmentFilter, multilingual}) => 
-        //             await this.getSegments(document, {filters: segmentFilter, multilingual})
-        //     },
-        //     log: {
-        //         project: 'name',
-        //         document: document => `${document.name} (${document.targetLanguage})`,
-        //         segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
-        //         target: target => `${target.language} → ${target.text}`
-        //     }
-        // })
+        this._smartcat = new _Smartcat()
 
 
-        
+        // this.log = {
+        //     project: 'name',
+        //     document: document => `${document.name} (${document.targetLanguage})`,
+        //     segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
+        //     target: target => `${target.language} → ${target.text}`
+        // }
+
     }
 
     /* Iterators */
@@ -413,7 +418,7 @@ class Scroid {
     async addPayables(options) {
 
         let {folder, filename} = options
-        let path = this.config.folders[folder] + filename
+        let path = folder + filename
 
         let payables = await csv2json().fromFile(path)
         remove(payables, {added: 'TRUE'})
@@ -504,6 +509,34 @@ class Scroid {
     
     }
 
+
+    async editAssignments(options) {
+        let {deadline, team, overwriteDeadline} = {
+            team: 'default',
+            ... options.set
+        }
+
+        let teamTemplate = this.load('teams')[team]
+        // Todo: insert the below into iteration, and get team from yaml
+        let assigneesByLanguage = await this.getTeam(teamTemplate)
+
+        await this.iterate('workflowStages', async workflowStage => {
+            let {assignment, document, project, stageNumber} = workflowStage
+            let saveDeadline = !!deadline
+            let addedAssignedUserIds = map(assigneesByLanguage[document.targetLanguage], 'userId')
+            if (!overwriteDeadline) {
+                //Todo: combine into one function
+                let documentStages = workflowStage.documentStages || await this.fetch('documentStages', {project, document, workflowStage}) 
+                saveDeadline = !documentStages[0].deadline
+            }
+            await assignment.saveAssignments({
+                addedAssignedUserIds, deadline, saveDeadline, stageNumber
+            })
+            noop()
+        }, options)
+        noop()
+    }
+
     async assignFreelancers(options) {
 
         let {deadline, mode, teamName, stageNumber} = assign({
@@ -511,6 +544,7 @@ class Scroid {
         }, options)
 
         let assigneesByLanguage
+
         if (mode == 'rocket') {
             let teamTemplate = this.load('teams')[teamName]
             assigneesByLanguage = await this.getTeam(teamTemplate)
@@ -546,7 +580,7 @@ class Scroid {
                             // Could be that some freelancers are already invited, then confirm the assignment
                             console.warn(error)
                             let toSave = {
-                                addedAssignedUserIds: [freelancerIds[0]], stageSelector: stageNumber // Todo: choose at random
+                                addedAssignedUserIds: [freelancerIds[0]], stageNumber // Todo: choose at random
                             }
                             let {name} = assigneesByLanguage[targetLanguage][0]
                             try {
@@ -675,22 +709,17 @@ class Scroid {
 
     }
 
-    async completeFinishedDocuments(options, filters) {
-
-        assign(filters, {
-            documentFilter: document => first(document.workflowStages).progress == 100 && document.status != 'completed'
-        })
-
-        await this.iterateDocuments(filters, async ({document}) => {
-
+    async complete(what, options) {
+        if (what != 'documents')
+            throw(`No method to complete ${what}`)
+        await this.iterate('documents', async (document) => {
             try {
                 await this._smartcat.documents(document.documentId).targets(document.targetLanguageId).complete()
             } catch (error) {
+                console.warning(`Can’t complete document ${document.url}`)
                 return
             }
-
-        })
-
+        }, options)
     }
 
     async confirmNonEmptySegments_(document, options = {}) {
@@ -770,8 +799,9 @@ class Scroid {
     }
 
     async createProject(options) {
-        let {folder, filename} = options
-        let path = this.config.folders[folder] + filename
+        // let {folder, filename} = options
+        // let path = this.config.folders[folder] + filename
+        let {path} = options
         let file = {
             content: fs.readFileSync(path),
             name: path.match(/[^/\\]+$/)[0]
@@ -819,6 +849,65 @@ class Scroid {
             projects.push(project)
         })
         await this.editProject(options, {projectFilter})
+    }
+
+    async edit(what, options) {
+        if (what == 'projects') {
+            let {tmName, glossaryName, mtEngineSettings, markupPlaceholders} = options.set
+            let resources = this.load('resources')
+            let {translationMemories} = resources
+            let pretranslateRules = options.set.pretranslate
+            if (pretranslateRules) {
+                for (let rule of pretranslateRules) {
+                    rule.translationMemoryId = translationMemories[rule.tmName]
+                    delete rule.tmName
+                }
+            }
+
+            this.iterate('projects', async project => {
+                {
+                    // await this.iterateProjects({filters}, async ({project}) => {
+                        let nativeKeys = "name, description, deadline, clientId, domainId, vendorAccountId, externalTag".split(', ')
+                        let nativeSettings = assign(
+                            pick(project, nativeKeys), 
+                            pick(options.set, nativeKeys)
+                        )
+                        let projectApi = this.smartcat.project(project.id)
+                        try {
+                            await projectApi.put(nativeSettings)
+                        } catch (error) {
+                            throw(error)
+                        }
+            
+                        if (tmName) {
+                            let id = translationMemories[tmName]
+                            await projectApi.translationMemories.post([{
+                                id,
+                                matchThreshold: 75,
+                                isWritable: true
+                            }])
+                        }
+            
+                        if (glossaryName) {
+                            let {glossaries} = resources
+                            let id = glossaries[glossaryName]
+                            await projectApi.glossaries.put([id])
+                        }
+            
+                        if (mtEngineSettings) {
+                            await this._smartcat.projectResources(project.id).mt.put(mtEngineSettings)
+                        }
+            
+                        if (markupPlaceholders) {
+                            await this._smartcat.documents().markupPlaceholders(project.id)
+                        }
+            
+                        if (pretranslateRules) {
+                            await this._smartcat.projects(project.id).pretranslate(pretranslateRules)
+                        }
+                    }
+            }, options)
+        }
     }
 
     async editProject(options) { //, filters) {
@@ -969,7 +1058,7 @@ class Scroid {
             } 
         })
 
-        this.save({termsMatchingRegexp})
+        this.dump({termsMatchingRegexp})
     }
 
     async getDocumentsWithoutInvitations(options, filters) {
@@ -1001,7 +1090,7 @@ class Scroid {
                             document = pick(document, options.valuesToSave)
                         documentsWithoutInvitations.push(document)
                     }
-                    this.save({documentsWithoutInvitations})    
+                    this.dump({documentsWithoutInvitations})    
                 })
             )
         })
@@ -1048,7 +1137,7 @@ class Scroid {
 
         })
         
-        this.save({allComments})
+        this.dump({allComments})
 
     }
 
@@ -1086,7 +1175,7 @@ class Scroid {
             }
             
 
-            this.save({contacts})
+            this.dump({contacts})
         }
     
 
@@ -1228,6 +1317,22 @@ class Scroid {
         return assignmentInfo
     }
 
+    async getAssignments() {
+        let promises = []
+
+        for (let project of this.projects) {
+            for (let document of project.documents) {
+                promises.push((async () => {
+                    let {documentId, targetLanguageId} = document
+                    document.assignment = await this._smartcat.workflowAssignments(project.id, [documentId], targetLanguageId).info()
+                })())
+            }
+        }
+
+        await Promise.all(promises)
+        this.saveProjects()
+    }
+
     async getJobs() {
         let apiCalls = []
 
@@ -1290,7 +1395,7 @@ class Scroid {
                 words: document.wordsCount,
                 targetLanguage: document.targetLanguage
             })
-            this.save({documentWordcounts})
+            this.dump({documentWordcounts})
         })
 
         return documentWordcounts
@@ -1299,78 +1404,63 @@ class Scroid {
     async getPendingJobs() {
 
         let pendingJobs = []
-
-        let stageFilter = stage => stage.progress != 100
-        let unassignedFilter = {status: 'notAssigned'}
-
         let promises = []
 
+        // let stageFilter = stage => stage.progress != 100
+        // let unassignedFilter = {status: 'notAssigned'}
+
         for (let project of this.projects) {
-            for (let document of project.documents) {
-                promises.push((async () => {
-                    let assignees = []
-                
-                    if (find(document.workflowStages, unassignedFilter)) {
-        
-                        let assignmentInfo = await this.getAssignmentInfo(project, document)
-                        for (let stage of assignmentInfo.workflowStages) {
-        
-                            // Todo: account for non-rocket assignments
-                            for (let invitation of filter(stage.freelancerInvitations, {
-                                isAccepted: false,
-                                isDeclined: false
-                            })) {
-                                let {userId} = invitation
-                                let {stageNumber} = stage
-                                assignees.push({
-                                    userId,
-                                    progress: 0,
-                                    assignedWordsCount: document.wordsCount,
-                                    stageNumber,
-                                    status: 'notAssigned'
-                                })
+            for (let projectJob of project.jobs) {
+                let {jobStatus} = projectJob
+                for (let person of projectJob.executives) {
+                    let promise = async () => {
+                        let projectUrl = this.link({project}).url
+                        let projectName = project.name
+                        let {userName, targetLanguageId, stageNumber} = person
+                        if (jobStatus == 2) { // Invited but not accepted; we need to count doc words instead 
+                            let documents = filter(project.documents, {targetLanguageId})
+                            let documentIds = map(documents, 'documentId')
+                            let info = await this._smartcat.workflowAssignments(
+                                project.id, documentIds, targetLanguageId
+                            ).info()
+                            for (let workflowStage of info.workflowStages) {
+                                for (let documentStage of workflowStage.documentStages) {
+                                    let {deadline, documentName, documentId} = documentStage
+                                    let documentUrl = this.link({
+                                        document: {
+                                            targetLanguageId, documentId
+                                        }
+                                    }).url
+                                    let assignedWords = filter(documents, {documentId})[0].wordsCount
+                                    let progress = 0
+                                    let wordsLeft = assignedWords
+                                    pendingJobs.push({
+                                        userName, targetLanguageId, projectName, documentName, 
+                                        projectUrl, documentUrl, deadline, stageNumber, jobStatus,
+                                        assignedWords, wordsLeft, progress
+                                    })        
+                                }
                             }
-                        }    
-        
-                    }
-        
-                    for (let stage of filter(document.workflowStages, stageFilter)) {
-                        for (let assignee of stage.executives) {
-                            let {stageNumber, status} = stage
-                            assignees.push(assign(assignee, {stageNumber, status}))
+                        } else {    
+                            for (let personJob of filter(person.jobs, job => job.assignedWords > 0 && job.progress < 1)) {
+                                let {assignedWords, progress, deadline, documentId, documentName} = personJob
+                                let wordsLeft = (1. - progress) * assignedWords
+                                let documentUrl = this.link({
+                                    document: {
+                                        targetLanguageId, documentId
+                                    }
+                                }).url
+                                pendingJobs.push({
+                                    userName, targetLanguageId, projectName, documentName, 
+                                    projectUrl, documentUrl, deadline, stageNumber, jobStatus,
+                                    assignedWords, wordsLeft, progress
+                                })        
+                            }
                         }
+                        this.dump({pendingJobs})
                     }
-                    
-                    for (let assignee of assignees) {
-                        let {targetLanguage, targetLanguageId} = document
-                        let {userId, progress, assignedWordsCount, stageNumber, status} = assignee
-                        let contact = await this.getContact({userId})
-        
-                        let {email, firstName} = contact
-        
-                        if (!firstName) firstName = 'there'
-        
-                        pendingJobs.push({
-                            email, 'First name': firstName,
-                            targetLanguage,
-                            client: this.accountName,
-                            project: project.name,
-                            document: document.name,
-                            projectUrl: this.link({project}).url,
-                            deadline: project.deadline,
-                            documentUrl: this.link({document, targetLanguageId}).url,
-                            stageNumber,
-                            status,
-                            wordsTotal: assignedWordsCount,
-                            wordsLeft: round((100 - progress) * assignedWordsCount / 100),
-                            progress: progress
-                        })
-                        
-                        this.save({pendingJobs})
-                    }
-                })())
-
-
+                    promises.push(promise())    
+                }
             }
         }
 
@@ -1392,7 +1482,10 @@ class Scroid {
     }
 
 
-    async getProjects(args) {
+    async getProjects(options = {}) {
+
+        if (this.projects && !options.source == 'api')
+            return this.projects
 
         let decomposeDocumentId = compositeId => {
             let [documentId, targetLanguageId] = compositeId.match(/(^.+)_(\d+)/).slice(1)
@@ -1400,13 +1493,15 @@ class Scroid {
             return {documentId, targetLanguageId}
         }
 
-        let projects = await this.smartcat.project().list(args)
+        let projects = await this.smartcat.project().list(options)
         
         for (let project of projects) {
+            project.url = this.link({project}).url
             project.targetLanguagesById = {}
             for (let document of project.documents) {
                 let {documentId, targetLanguageId} = decomposeDocumentId(document.id)
                 assign(document, {documentId, targetLanguageId})
+                document.url = this.link({document}).url
                 if (!project.targetLanguagesById[targetLanguageId]) {
                     project.targetLanguagesById[targetLanguageId] = document.targetLanguage
                 }
@@ -1414,10 +1509,13 @@ class Scroid {
                 let stages = document.workflowStages
                 for (let i = 0; i < stages.length; i++) {
                     let stage = stages[i]
-                    stage.stageNumber = i + 1 
+                    stage.stageNumber = i + 1
+                    stage.wordsLeft = document.wordsCount - stage.wordsTranslated
                     for (let assignee of stage.executives) {
                         renameKeys(assignee, {id: 'userId'})        
                     }
+                    stage.assignment = this._smartcat.workflowAssignments(project.id, [documentId], targetLanguageId)
+
                 }
 
                 Object.defineProperty(document, 'project', {get: () => project})
@@ -1566,7 +1664,7 @@ class Scroid {
         let assigneesByLanguage = {}
         let assignees = []
         let smartcatTeam = await this.downloadMyTeam()
-        this.save({smartcatTeam})
+        this.dump({smartcatTeam})
     
         for (let languageKey in teamTemplate) {
             let languages = languageKey.split(',')
@@ -1574,7 +1672,7 @@ class Scroid {
             let names = teamTemplate[languageKey]
             if (!isArray(names)) names = [names]
             for (let name of names) {
-                console.log({name})
+                // console.log({name})
                 let assignee = find(smartcatTeam, assignee => compact([assignee.firstName, assignee.lastName]).join(' ') == name)
                 
                 if (!assignees.includes(assignee)) {
@@ -1915,24 +2013,29 @@ class Scroid {
         if (!saveAs) saveAs = 'documents'
         let toSave = {}
         toSave[saveAs] = documents
-        this.save(toSave)
+        this.dump(toSave)
     }
 
     saveProjects() {
         let {projects} = this
-        this.save({projects})
+        this.dump({projects})
     }
 
     async setAccount(name) {
         let accounts = this.load('accounts')
 
-        if (!name) name = this.settings.defaultAccount
-        if (!name) name = accounts[0].name
+        // if (!name) name = this.settings.defaultAccount
+        // if (!name) name = accounts[0].name
 
         let account = find(accounts, {name})
+
         assign(this, {account})
 
-        let {auth, server} = account
+        let {auth, server, fullName} = account
+
+        if (fullName)
+            name = fullName
+
         this.subDomain = domainByServer[server]
         let {subDomain} = this
 
@@ -1956,6 +2059,33 @@ class Scroid {
 
         let {_smartcat} = this
 
+        let getContext = async () => {
+            let {userContext, accountContext} = await _smartcat.userContext()
+            let {isAuthenticated, inAccount} = userContext
+            if (!inAccount) {
+                if (isAuthenticated)
+                    await _smartcat.auth.logout()
+                let {redirectUrl} = await this.loginToServer(username, password, server)
+                if (redirectUrl.match(/CrossAuth/)) {
+                    await _smartcat.auth.loginToAccount(auth.accountId)
+                }
+                return await getContext()
+            } else {
+                return {userContext, accountContext}
+            }    
+
+         }
+        
+        let {accountContext} = await getContext()
+
+        let {accountName, availableAccounts} = accountContext
+
+        if (accountName != name) {
+            let availableAccount = find(availableAccounts, {name})
+            await _smartcat.account.change(availableAccount.id)
+        }
+
+
         // _smartcat._beforeExecute = async () => {
         //     let {headers} = this._axios
         //     if (!headers.cookie) {
@@ -1963,19 +2093,15 @@ class Scroid {
         //     }
         // }
     
-        _smartcat._onError = async ({tryExecute, stem, error, resolve, reject}) => {
+        _smartcat._onError = async ({tryExecute, executeArgs = {}, stem, error}) => {
             let {response, code} = error
             if (response) {
                 let {status} = response
-                if (status == 403) {
-                    let {relogin} = stem._state
-                    while (relogin && relogin.inProgress) {
-                        // console.log('Relogin in progress, waiting...')
-                        if (relogin.completed)
-                            throw(error)
-                        else
-                            await promisify(setImmediate)()
+                if (status == 403 && !executeArgs.ignore403) {
+                    while (stem._state.relogin == 'inProgress') {
+                        await sleep(stem._options._rateLimit)
                     }
+                    let {relogin} = stem._state
                     this.load('credentials')
                     let {cookie} = error.request._headers
                     let newCookie = stem._axios.defaults.headers.cookie
@@ -1983,27 +2109,29 @@ class Scroid {
                         console.log('Cookie has changed; trying with the new one...')
                         cookie = newCookie
                     } else {
-                        if (relogin) {
-                            console.log('Re-trying after relogin...')
+                        if (relogin == 'completed') {
+                            throw(error)
                         } else {
                             console.log('Trying to re-login...')
-                            stem._state.relogin = {inProgress: true}
-                            cookie = await _smartcat.auth.signInUser(username, password).cookie
+                            stem._state.relogin = 'inProgress'
+                            cookie = (await _smartcat.auth.signInUser(username, password)).cookie
                             credentials.smartcat.sessionsByServer[server] = cookie.match(/id=.*/)[0]
-                            this.save({credentials})
+                            this.dump({credentials})
                             assign(stem._axios.defaults.headers, {cookie})
-                            await _smartcat.account.change(auth.username)
-                            stem._state.relogin = {completed: true}
+                            await _smartcat.account.change(auth.accountId)
+                            stem._state.relogin = 'completed'
                         }
                     }
-                    resolve(new Promise(tryExecute))                    
+                    return await tryExecute({ignore403: true})
                 } else
-                    reject(error)
+                    throw(error)
             } else {
                 if (code == 'ETIMEDOUT' || code == 'ECONNRESET') {
                     console.log(`${code}. Trying again...`)
-                    resolve(new Promise(tryExecute))
-                }    
+                    return await tryExecute()
+                } else {
+                    throw(error)
+                }
             }
         }    
 
@@ -2088,21 +2216,54 @@ class Scroid {
 
     }
 
+    async store(key, options) {
+        let wugs = await this.all(key, options)
+        this[key] = wugs
+        let paths = options.include
+        if (paths) {
+            wugs = map(wugs, wug => {
+                let newWug = {}
+                for (let path of paths) {
+                    let key = path
+                    if (!isString(path)) {
+                        key = keys(path)[0]
+                        path = path[key]
+                    }
+                    newWug[key] = get(wug, path)
+                }
+                return newWug
+            })
+        }
+        let saveAs = options.as
+        if (!saveAs)
+            saveAs = key
+        this.dump({wugs}, saveAs)
+    }
+
+    async call(path, data) {
+        if (!isArray(data)) {
+            data = [data]
+        }
+        let paths = path.split('/')
+        let result = this
+        let i = data.length - paths.length
+        for (let subPath of paths) {
+            let func = get(result, subPath)
+            result = await func(data[i])
+            i++
+        }
+        assign(this, {result})    
+    }
+
+    async waitForInput({query}) {
+        await new Promise(resolve => readline.question(query, ans => {
+            readline.close();
+            resolve(ans);
+        }))
+    }
+
 }
 
 
-// for (let fileName of fs.readdirSync('./lib/properties')) {
-
-//     let propertyName = fileName.match('^(.*).js$')[1]
-//     let imported = require(`./lib/properties/${propertyName}`)
-//     let scroid = Scroid.prototype
-
-//     if (typeof imported == 'function') {
-//         scroid[propertyName] = imported
-//     } else {
-//         assign(scroid, imported)
-//     }
-
-// }
 
 module.exports = Scroid

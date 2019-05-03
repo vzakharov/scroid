@@ -4,3 +4,4 @@ private/
 .DS_Store
 package-lock.json
 .vscode/launch.json
+links.txt

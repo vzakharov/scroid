@@ -34,26 +34,30 @@ async function main() {
         let scroid = new Scroid(username)
 
         let autorun = scroid.load('autorun')
-        let {accountName, namespace} = autorun
+        let {script} = autorun
 
-        await scroid.setAccount(accountName)
+        // await scroid.setAccount(accountName)
 
-        let configs = scroid.load(`config.${accountName}.${namespace}`, 'config')
+        let configs = scroid.load(`script.${script}`, 'config')
         if (!Array.isArray(configs)) configs = [configs]
 
         for (let config of configs) {
     
-            let action, args
+            let action, options
             if (isString(config)) {
                 action = config
+                options = {}
             } else {
                 action = keys(config)[0]
-                args = config[action]
+                options = config[action]
             }
 
-            console.log(assign(new class Action{}, {action, args}))
+            args = action.split(' ')
+            action = args[0]
+            args = args.slice(1)
+            console.log(assign(new class Action{}, {action, args, options}))
 
-            await scroid[action](args)
+            await scroid[action](...args, options)
         }
 
         
@@ -379,7 +383,7 @@ async function main() {
 
                 let segmentTranslations = await scroid.getSegmentTranslations(filters)
 
-                scroid.save({segmentTranslations})
+                scroid.dump({segmentTranslations})
             },
 
             async writeReport() {
