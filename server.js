@@ -9,7 +9,7 @@ const validate = async (request, username, password) => {
     let scroid = scroids[username]
     let credentials = {username}
     if (!scroid)
-        scroid = new Scroid(username)
+        scroid = await Scroid.create(username, password)
     if (!scroid.settings.password || !(await bcrypt.compare(password, scroid.settings.password))) {
         try {
             await scroid.login(username, password)
@@ -32,7 +32,7 @@ const init = async () => {
 
     const server = Hapi.server({
         port: 3000,
-        host: 'localhost'
+        host: '192.168.31.117'
     })
 
     await server.register(require('@hapi/basic'))
@@ -51,6 +51,12 @@ const init = async () => {
             return {action, args, query, payload}
             
         }
+    })
+
+    server.route({
+        method: 'GET',
+        path: '/*',
+        handler: () => {return "Привет, Медвед! 🐻"}
     })
 
     await server.start()

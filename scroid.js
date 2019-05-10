@@ -20,13 +20,13 @@ const _ = require('lodash')
 
 const {
     assign, capitalize, clone, compact, concat, cloneDeep, filter, find, first, flattenDeep, forEach, 
-    get, groupBy, includes, isArray, isFunction, isEqual, isString, keyBy, keys, last, 
+    get, groupBy, includes, isArray, isFunction, isEqual, isString, isUndefined, keyBy, keys, last, 
     map, mapKeys, mapValues, merge, noop, omit, pick, remove, reverse, round, sample, sortBy, sumBy, 
     toNumber, uniqBy, values
 } = _
 
 const {
-    AsyncIterable, sleep, getDeep, iterate, setDeep, Select, matchesFilter, renameKeys
+    AsyncIterable, sleep, getDeep, iterate, setDeep, Select, matchesFilter, renameKeys, lastDefined
 } = require('vz-utils')
 
 const pluralize = require('pluralize')
@@ -45,6 +45,10 @@ const {stringify} = JSON
 
 class Scroid extends AsyncIterable {
 
+    async do(action, args, options) {
+        return this[action](args, options)
+    }
+
     async fetch(what, args) {
         let {
             project, document, options
@@ -57,12 +61,17 @@ class Scroid extends AsyncIterable {
     
             // Todo: merge with document.workflowStages
             case 'freelancerInvitations': // fallthrough
-            case 'documentStages':
+            // case 'documentStages':
+            case 'executives':
+            case 'deadline':
             // case 'assignmentStages':
                 let {workflowStage} = args
-                let {workflowStages} = await this._smartcat.workflowAssignments(
+                // Todo: Fix the thing with deadline
+                if (!workflowStage)
+                    return
+                let {workflowStages} = (await this._smartcat.workflowAssignments(
                     project.id, [document.documentId], document.targetLanguageId
-                ).info()
+                ).documents())[0].targetDocuments[0]
                 merge(document.workflowStages, workflowStages)
                 return workflowStage[what]
         }
@@ -94,25 +103,20 @@ class Scroid extends AsyncIterable {
     }
 
     async login(username, password) {
-        await this._smartcat.auth.signInUser(username, password)
+        
+        try {
+            await this._smartcat.auth.signInUser(username, password)
+        } catch(error) {
+            throw(lastDefined(error, error.response, error.response.data))
+        }
 
         assign(this, {
             username,
-            storageFolder: `./private/userStorage/${username}`
+            storageFolder: `${process.env.scroidDir}/private/userStorage/${username}`
         })
 
         this.load('settings')
         this.load('credentials')
-
-        let {mixmax} = this.credentials
-
-        if (mixmax) {
-            let {apiToken} = this.credentials.mixmax
-            this.mixmax = Axios.create({
-                baseURL: 'https://api.mixmax.com/v1/',
-                params: {apiToken}
-            })    
-        }
 
         this._smartcat = new _Smartcat(username)
     }
@@ -142,7 +146,7 @@ class Scroid extends AsyncIterable {
             if (account && value[account.name]) {
                 value = value[account.name]
             }
-        } catch {
+        } catch(error) {
             value = {}
         }
         if (!asWhat) {
@@ -186,6 +190,7 @@ class Scroid extends AsyncIterable {
                         targets: {}
                     },
                     workflowStages: {
+                        deadline: {},
                         executives: {},
                         freelancerInvitations: {},
                         documentStages: {
@@ -200,19 +205,21 @@ class Scroid extends AsyncIterable {
 
         super(schema)
 
-        assign(this, {
-            username,
-            storageFolder: `./private/userStorage/${username}`
-        })
+        if (username) {
+            assign(this, {
+                username,
+                storageFolder: `./private/userStorage/${username}`
+            })
+    
+            this.load('settings')
+            this.load('credentials')    
+        }
 
-        this.load('settings')
-        this.load('credentials')
-
-        let {apiToken} = this.credentials.mixmax
-        this.mixmax = Axios.create({
-            baseURL: 'https://api.mixmax.com/v1/',
-            params: {apiToken}
-        })
+        // let {apiToken} = this.credentials.mixmax
+        // this.mixmax = Axios.create({
+        //     baseURL: 'https://api.mixmax.com/v1/',
+        //     params: {apiToken}
+        // })
 
         this._smartcat = new _Smartcat()
 
@@ -244,176 +251,6 @@ class Scroid extends AsyncIterable {
             }
         }
     }
-
-    async iterateSome({kind, filter, options, asyncCallback, getAll}) {
-
-        if (!filter) filter = () => true
-
-        let allItems = await getAll();
-        let items = _.filter(allItems, filter)
-        console.log(`${capitalize(kind)}(s): ${map(items, 'name').join(', ')}`)
-
-        for (let item of items) {
-            console.log(`Handling ${kind} ${item.name} (id ${item.id})...`)
-            let itemArgs = {}
-            itemArgs[kind] = item
-            itemArgs[pluralize(kind)] = items
-            await asyncCallback(assign(options, itemArgs))
-        }
-    }
-
-    /** callback: async {project} => ... */
-    async iterateProjects({filters, options}, asyncCallback) {
-        this.prepareFilters(filters)
-        let {multilingual, loadViaAPI} = options || {}
-        // let {projectFilter} = filters
-        let projectFilter = filters.project
-        let {name} = projectFilter
-        let getAll = //loadViaAPI ? (
-                isString(name) && name.match(/^[^^/]/) ?
-                    async () => [await this.getProject(name)] :
-                    async () => await this.getProjects()
-            // ) : (
-            //     isArray(projectFilter.id) ?
-            //         projectFilter.id :
-            //         [projectFilter.id]
-            // )
-        await this.iterateSome({
-            kind: 'project',
-            filter: project => matchesFilter(project, projectFilter),
-            options: {multilingual},
-            asyncCallback,
-            getAll
-        })
-    }
-
-    /** callback: async ({document, project}) => ... */
-    async iterateDocuments({filters, options}, asyncCallback) {
-
-        let {noInvitations, multilingual, loadViaAPI} = options
-        let {projectFilter, documentFilter} = filters
-
-        await this.iterateProjects({projectFilter, multilingual}, async ({project}) => {
-
-            await this.iterateSome({
-                kind: 'document',
-                filter: documentFilter,
-                options: {multilingual, project},
-                asyncCallback,
-                getAll: () => {
-                    let {documents} = project
-                    for (let document of documents)
-                        document.targetLanguageId = Number(document.targetLanguageId)
-                    
-                    if (multilingual) {
-
-                        documents = uniqBy(documents, 'documentId')
-                        for (let document of documents) {
-                            let {documentId} = document
-                            for (let key of [
-                                'targetLanguage', 'targetLanguageId', 'status', 'id', 'workflowStages', 'statusModificationDate'
-                            ]) {
-                                let monoDocuments = filter(project.documents, {documentId})
-                                if (monoDocuments.length == 1)
-                                    continue
-                                document.multilingual = true
-                                document[pluralize(key)] = map(
-                                    monoDocuments,
-                                    key
-                                )
-                                delete document[key]
-                            }
-                        }
-                        
-
-                    }
-
-                    return documents
-                }
-            })
-
-        })
-
-    }
-
-    async iterateAssignees(filters, callback) {
-        let {assigneeFilter} = filters
-
-        await this.iterateStages(filters, 
-            async iteratees => {
-
-                let {stage} = iteratees
-
-                let assignees = filter(stage.executives, assigneeFilter)
-
-                for (let assignee of assignees) {
-                    await callback(assign(iteratees, {assignee, assignees}))
-                }
-
-            }
-        )
-    }
-
-
-    async iterateStages(options, callback) {
-        let {stageFilter} = options
-
-        await this.iterateDocuments(options, 
-            async iteratees => {
-
-                let {document} = iteratees
-
-                let stages = filter(document.workflowStages, stageFilter)
-
-                for (let stage of stages) {
-                    await callback(assign(iteratees, {stage, stages}))
-                }
-
-            }
-        )
-    }
-
-    async iterateSegments(options, callback) {
-
-        let {segmentFilter, multilingual} = options
-
-        await this.iterateDocuments(options, 
-            async iteratees => {
-
-                let {document} = iteratees
-
-                let segments = await this.getSegments(document, segmentFilter, multilingual)
-
-                for (let segment of segments) {
-                    await callback(assign(iteratees, {segment, segments}))
-                }
-
-            }
-        )
-
-    }
-
-    /** Callback: async ({target, segment, segments, document, documents, project, projects}) => ...
-     */
-    async iterateSegmentTargets(options, callback) {
-
-        await this.iterateSegments(options, 
-            async iteratees => {
-
-                let {segment} = iteratees
-                let {targets} = segment
-
-                for (let target of targets) {
-                    await callback(assign(iteratees, {target, targets}))
-                }
-
-            }
-        )
-
-    }
-
-    /* */
-
 
     async addPayables(options) {
 
@@ -522,12 +359,15 @@ class Scroid extends AsyncIterable {
 
         await this.iterate('workflowStages', async workflowStage => {
             let {assignment, document, project, stageNumber} = workflowStage
+
             let saveDeadline = !!deadline
             let addedAssignedUserIds = map(assigneesByLanguage[document.targetLanguage], 'userId')
             if (!overwriteDeadline) {
                 //Todo: combine into one function
-                let documentStages = workflowStage.documentStages || await this.fetch('documentStages', {project, document, workflowStage}) 
-                saveDeadline = !documentStages[0].deadline
+                if (isUndefined(workflowStage.deadline)) {
+                    await this.fetch('deadline', {project, document, workflowStage}) 
+                }
+                saveDeadline = !workflowStage.deadline
             }
             await assignment.saveAssignments({
                 addedAssignedUserIds, deadline, saveDeadline, stageNumber
@@ -864,7 +704,7 @@ class Scroid extends AsyncIterable {
                 }
             }
 
-            this.iterate('projects', async project => {
+            await this.iterate('projects', async project => {
                 {
                     // await this.iterateProjects({filters}, async ({project}) => {
                         let nativeKeys = "name, description, deadline, clientId, domainId, vendorAccountId, externalTag".split(', ')
@@ -1399,76 +1239,6 @@ class Scroid extends AsyncIterable {
         })
 
         return documentWordcounts
-    }
-
-    async getPendingJobs() {
-
-        let pendingJobs = []
-        let promises = []
-
-        // let stageFilter = stage => stage.progress != 100
-        // let unassignedFilter = {status: 'notAssigned'}
-
-        for (let project of this.projects) {
-            for (let projectJob of project.jobs) {
-                let {jobStatus} = projectJob
-                for (let person of projectJob.executives) {
-                    let promise = async () => {
-                        let projectUrl = this.link({project}).url
-                        let projectName = project.name
-                        let {userName, targetLanguageId, stageNumber} = person
-                        if (jobStatus == 2) { // Invited but not accepted; we need to count doc words instead 
-                            let documents = filter(project.documents, {targetLanguageId})
-                            let documentIds = map(documents, 'documentId')
-                            let info = await this._smartcat.workflowAssignments(
-                                project.id, documentIds, targetLanguageId
-                            ).info()
-                            for (let workflowStage of info.workflowStages) {
-                                for (let documentStage of workflowStage.documentStages) {
-                                    let {deadline, documentName, documentId} = documentStage
-                                    let documentUrl = this.link({
-                                        document: {
-                                            targetLanguageId, documentId
-                                        }
-                                    }).url
-                                    let assignedWords = filter(documents, {documentId})[0].wordsCount
-                                    let progress = 0
-                                    let wordsLeft = assignedWords
-                                    pendingJobs.push({
-                                        userName, targetLanguageId, projectName, documentName, 
-                                        projectUrl, documentUrl, deadline, stageNumber, jobStatus,
-                                        assignedWords, wordsLeft, progress
-                                    })        
-                                }
-                            }
-                        } else {    
-                            for (let personJob of filter(person.jobs, job => job.assignedWords > 0 && job.progress < 1)) {
-                                let {assignedWords, progress, deadline, documentId, documentName} = personJob
-                                let wordsLeft = (1. - progress) * assignedWords
-                                let documentUrl = this.link({
-                                    document: {
-                                        targetLanguageId, documentId
-                                    }
-                                }).url
-                                pendingJobs.push({
-                                    userName, targetLanguageId, projectName, documentName, 
-                                    projectUrl, documentUrl, deadline, stageNumber, jobStatus,
-                                    assignedWords, wordsLeft, progress
-                                })        
-                            }
-                        }
-                        this.dump({pendingJobs})
-                    }
-                    promises.push(promise())    
-                }
-            }
-        }
-
-        await Promise.all(promises)
-
-        // this.save({pendingJobs})
-        return pendingJobs
-
     }
 
     async getProject(projectName) {
@@ -2067,7 +1837,8 @@ class Scroid extends AsyncIterable {
                     await _smartcat.auth.logout()
                 let {redirectUrl} = await this.loginToServer(username, password, server)
                 if (redirectUrl.match(/CrossAuth/)) {
-                    await _smartcat.auth.loginToAccount(auth.accountId)
+                    let {accountId} = auth
+                    await _smartcat.auth.loginToAccount({accountId})
                 }
                 return await getContext()
             } else {
