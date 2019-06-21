@@ -20,13 +20,14 @@ const _ = require('lodash')
 
 const {
     assign, capitalize, clone, compact, concat, cloneDeep, filter, find, first, flattenDeep, forEach, 
-    get, groupBy, includes, isArray, isFunction, isEqual, isString, isUndefined, keyBy, keys, last, 
+    get, groupBy, includes, indexOf, isArray, isFunction, isEqual, isString, isUndefined, keyBy, keys, last, 
     map, mapKeys, mapValues, merge, noop, omit, pick, remove, reverse, round, sample, sortBy, sumBy, 
     toNumber, uniqBy, values
 } = _
 
 const {
-    AsyncIterable, sleep, getDeep, iterate, setDeep, Select, matchesFilter, renameKeys, lastDefined
+    AsyncIterable, sleep, getDeep, setGetters,
+    iterate, setDeep, Select, matchesFilter, renameKeys, lastDefined
 } = require('vz-utils')
 
 const pluralize = require('pluralize')
@@ -72,81 +73,80 @@ const schema = scroid => ({
     projects: {
         _defaultFields: ['name', 'url', 'status'],
         _descriptor: 'name',
-        _fetch: ({options}) => scroid.getProjects(options),
         _nativeFilterKeys: ['statuses'],
-        documents: {
-            _fetch: ({project}) => scroid.getDocuments(project),
+        multidocs: {
             _descriptor: 'name',
-            segments: {
-                _fetch: ({document, search}) => scroid.getSegments(document, {segmentFilter: search.segments}),
-                _preNativeFilters: ['confirmed', 'stageNumber', 'changed', 'hasComments'],
-                _getNativeFilters: (filters) => {
-                    let {confirmed, stageNumber, changed, hasComments} = filters
-                    for (let key of ['confirmed', 'stageNumber', 'changed', 'hasComments']) {
-                        delete filters[key]
-                    }
-                    let nativeFilters = []
+            commentThreads: {},
+            documents: {
+                _descriptor: 'name',
+                segments: {
+                    _fetch: ({document, search}) => scroid.getSegments(document, {segmentFilter: search.segments}),
+                    _preNativeFilters: ['confirmed', 'stageNumber', 'changed', 'hasComments'],
+                    _getNativeFilters: (filters) => {
+                        let {confirmed, stageNumber, changed, hasComments} = filters
+                        for (let key of ['confirmed', 'stageNumber', 'changed', 'hasComments']) {
+                            delete filters[key]
+                        }
+                        let nativeFilters = []
+                        
+                        if (confirmed != undefined) {
+                            nativeFilters.push({name: 'confirmation', isConfirmed: confirmed, workflowStageNumber: stageNumber})
+                        }
                     
-                    if (confirmed != undefined) {
-                        nativeFilters.push({name: 'confirmation', isConfirmed: confirmed, workflowStageNumber: stageNumber})
-                    }
+                        if (changed) {
+                            nativeFilters.push({
+                                name: 'revisions', 
+                                includeAutoRevisions: false, 
+                                revisionAccountUserId: [],
+                                revisionStageNumber: null
+                            })
+                        }
                 
-                    if (changed) {
-                        nativeFilters.push({
-                            name: 'revisions', 
-                            includeAutoRevisions: false, 
-                            revisionAccountUserId: [],
-                            revisionStageNumber: null
-                        })
-                    }
-            
-                    if (hasComments) {
-                        nativeFilters.push({
-                            name: 'comments',
-                            hasComments: true
-                        })
-                    }
-                    
-                    return nativeFilters
-                }, 
-                targets: {}
-            },
-            multidocs: {
-                
-            },
-            workflowStages: {
-                _fetch: async( { document, project } ) => {
-                    let { documentId, targetLanguageId } = document
-                    let assignment = scroid._smartcat.workflowAssignments(
-                        project.id, [documentId], targetLanguageId
-                    )
-                    // Todo: What if we need to update the document list?
-                    if ( !scroid.documentLists ) scroid.documentLists = {}
-                    let documentListId = await scroid.getDocumentListId(document, assignment)
-                    let documents = await assignment.documentsByDocumentListId(documentListId)
-                    let multidoc = find(
-                        documents, {id: documentId}
-                    )
-                    let {workflowStages} = find(
-                        multidoc.targetDocuments, {targetLanguageId}
-                    )
-                    merge(document.workflowStages, workflowStages)
+                        if (hasComments) {
+                            nativeFilters.push({
+                                name: 'comments',
+                                hasComments: true
+                            })
+                        }
+                        
+                        return nativeFilters
+                    }, 
+                    targets: {}
                 },
-                _fetchChildren: async ({ workflowStage, project, document }) => {
-                    // Todo: turn 👇 into something prettier
-                    await scroid.subSchema['workflowStages']._fetch({ project, document })
-                    return workflowStage
-                },
-                deadline: { _fetch: 'parent' },
-                executives: { _fetch: 'parent' },
-                freelancerInvitations: { _fetch: 'parent' },
-                documentStages: {
-                    _fetch: 'parent',
-                    documentStageExecutives: {
-                        segmentRanges: {}
+                workflowStages: {
+                    _fetch: async( { document, project } ) => {
+                        let { documentId, targetLanguageId } = document
+                        let assignment = scroid._smartcat.workflowAssignments(
+                            project.id, [documentId], targetLanguageId
+                        )
+                        // Todo: What if we need to update the document list?
+                        if ( !scroid.documentLists ) scroid.documentLists = {}
+                        let documentListId = await scroid.getDocumentListId(document, assignment)
+                        let documents = await assignment.documentsByDocumentListId(documentListId)
+                        let multidoc = find(
+                            documents, {id: documentId}
+                        )
+                        let {workflowStages} = find(
+                            multidoc.targetDocuments, {targetLanguageId}
+                        )
+                        merge(document.workflowStages, workflowStages)
+                    },
+                    _fetchChildren: async ({ workflowStage, project, document }) => {
+                        // Todo: turn 👇 into something prettier
+                        await scroid.subSchema['workflowStages']._fetch({ project, document })
+                        return workflowStage
+                    },
+                    deadline: { _fetch: 'parent' },
+                    executives: { _fetch: 'parent' },
+                    freelancerInvitations: { _fetch: 'parent' },
+                    documentStages: {
+                        _fetch: 'parent',
+                        documentStageExecutives: {
+                            segmentRanges: {}
+                        }
                     }
                 }
-            }
+            }    
         }
     }
 })
@@ -170,6 +170,64 @@ class Scroid extends AsyncIterable {
     async fetch_projects({ nativeFilters }) {
         await this._smartcat.projects().filter(nativeFilters)
         return this._smartcat.ssrProjects().page()
+    }
+
+    enrich_project( project ) {
+        // Todo: Use some one-off function to find out all culture names at startup
+        for (let targetLanguage of project.targetLanguages) {
+            let { id } = targetLanguage
+            if (!targetLanguagesById[id])
+                targetLanguagesById[id] = targetLanguage.cultureName
+        }
+        project.url = `https://${this.subDomain}smartcat.ai/project/${project.id}`
+    }
+
+    async fetch_multidocs({ project }) {
+        return this._smartcat.projects(project.id).allDocuments()
+    }
+
+    enrich_multidoc(multidoc) {
+        renameKeys(multidoc, {targets: 'documents'})
+    }
+
+    enrich_document(document, { multidoc }) {
+        let { wordsCount } = multidoc
+        renameKeys(document, {languageId: 'targetLanguageId'})
+        document.id = [document.documentId, document.targetLanguageId].join('_')
+        document.targetLanguage = targetLanguagesById[document.targetLanguageId]
+        document.name = [multidoc.name, document.targetLanguage].join('_')
+        document.url = this.link({document}).url
+        assign(document, { wordsCount })
+    }
+
+    async fetch_workflowStages({ document, project }) {
+        let { documentId, multidoc, targetLanguageId } = document
+        let assignment = this._smartcat.workflowAssignments(
+            project.id, [documentId], targetLanguageId
+        )
+        // Todo: What if we need to update the document list?
+        if ( !this.documentLists ) this.documentLists = {}
+        let documentListId = await this.getDocumentListId(document, assignment)
+        let fetchedMultidoc = (
+            await assignment.documentsByDocumentListId(documentListId)
+        )[0]
+        let { documents } = multidoc
+        for (let targetDocument of fetchedMultidoc.targetDocuments) {
+            let { workflowStages, targetLanguageId } = targetDocument
+            let someDocument = find(documents, { targetLanguageId })
+            merge(someDocument.workflowStages, workflowStages)
+        }
+        return document.workflowStages
+    }
+
+    enrich_workflowStage(stage, { project, document }) {
+        let { documentId, targetLanguageId } = document
+        stage.stageNumber = indexOf(document.workflowStages, stage) + 1
+        stage.wordsLeft = document.wordsCount - stage.wordsTranslated
+        for (let assignee of stage.executives || []) {
+            renameKeys(assignee, {id: 'userId'})        
+        }
+        stage.assignment = this._smartcat.workflowAssignments(project.id, [documentId], targetLanguageId)
     }
 
     async getProjects(options = {}) {
@@ -223,7 +281,7 @@ class Scroid extends AsyncIterable {
         return documentListId
     }
 
-    async fetch(what, args) {
+    async fetch_bak(what, args) {
         let {
             project, document, options
         } = args
