@@ -63,13 +63,12 @@ async function main() {
             console.log(`Completed: ${JSON.stringify(toLog)}`)
         }
 
-        return
-
     } catch(error) {
 
         throw(error)
         
     }
 
+    return
 
 }

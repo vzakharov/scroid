@@ -19,7 +19,7 @@ const {
 const _ = require('lodash')
 
 const {
-    assign, capitalize, clone, compact, concat, cloneDeep, filter, find, first, flattenDeep, forEach, 
+    assign, capitalize, clone, compact, concat, cloneDeep, filter, find, findKey, first, flattenDeep, forEach, 
     get, groupBy, includes, indexOf, isArray, isFunction, isEqual, isString, isUndefined, keyBy, keys, last, 
     map, mapKeys, mapValues, merge, noop, omit, pick, remove, reverse, round, sample, sortBy, sumBy, 
     toNumber, uniqBy, values
@@ -32,121 +32,106 @@ const {
 
 const pluralize = require('pluralize')
 
-const domainByServer = {
+const subdomainByRegion = {
     eu: '',
     us: 'us.',
     ea: 'ea.'
 }
 
-const serverSessionSuffix = {
+const sessionSuffixByRegion = {
     eu: 'ru', us: 'us', ea: 'ea'
 }
 
 const {stringify} = JSON
 
 const schema = scroid => ({
-    freelancers: {
-        _fetch: ({search}) => scroid._smartcat.freelancers.search(search.freelancers),
-        _nativeFilterKeys: function ({
-            searchString, namePrefix, 
-            withPortfolio, daytime, 
-            serviceType, specializations, minRate, maxRate, 
-            specializationKnowledgeLevels, rateRangeCurrency, 
-            sourceLanguageId, targetLanguageId, 
-            onlyNativeSpeakers
-        }) { return arguments[0] }
+    exchangeRates: {},
+    languages: {
+        _descriptor: 'name'
     },
-    invoices: {
-        _descriptor: 'number',
-        _fetch: () => 
-            scroid._smartcat.invoices(),
-        jobs: {
-            _fetch: async ({invoice}) => {
-                let jobs = await scroid._smartcat.jobs.invoice(invoice.id)
-                for (let job of jobs) {
-                    job.isPaid = !!job.datePaidByCustomer
-                }
-                return jobs
-            }
-        }
-    },
-    projects: {
-        _defaultFields: ['name', 'url', 'status'],
+    nativeServices: {
         _descriptor: 'name',
-        _nativeFilterKeys: ['statuses'],
-        multidocs: {
-            _descriptor: 'name',
-            commentThreads: {},
-            documents: {
+    },
+    freelancers: {
+        _: {
+            inheritance: [
+                'nativeService', { sourceLanguage: 'language'}, { targetLanguage: 'language' }
+            ]
+        },
+        _nativeFilterKeys: [
+            'searchString', 'namePrefix', 
+            'withPortfolio', 'daytime', 
+            'serviceType', 'specializations', 'minRate', 'maxRate', 
+            'specializationKnowledgeLevels', 'rateRangeCurrency', 
+            'sourceLanguageId', 'targetLanguageId', 
+            'onlyNativeSpeakers', 'accountId'
+        ]
+    },
+    installations: {
+        _: {
+            descriptor: 'region',
+            freeze: true
+        },
+        accounts: {
+            _: {
+                id: 'id',
+                descriptor: 'name',
+                freeze: true
+            },
+            invoices: {
+                _descriptor: 'number',
+                invoiceJobs: {}
+            },
+            jobs: {
+                _id: 'id',
+                _descriptor: 'id',
+                _nativeFilterKeys: [
+                    'paymentStateFilter', 'userId', 'projectNamePrefix', 'invoiceId', 'payUntil'
+                ]
+            },        
+            teams: { },
+            members: {
+                _nativeFilterKeys: [
+                    'serviceType', 'sourceLanguage', 'targetLanguage', 'onlyNativeSpeakers',
+                    'allDialects', 'minRate', 'maxRate', 'rateRangeCurrency', 'specializations',
+                    'specializationKnowledgeLevel', 'searchString', 'daytime'
+                ]
+            },
+            projects: {
+                _defaultFields: ['name', 'url', 'status'],
                 _descriptor: 'name',
-                segments: {
-                    _fetch: ({document, search}) => scroid.getSegments(document, {segmentFilter: search.segments}),
-                    _preNativeFilters: ['confirmed', 'stageNumber', 'changed', 'hasComments'],
-                    _getNativeFilters: (filters) => {
-                        let {confirmed, stageNumber, changed, hasComments} = filters
-                        for (let key of ['confirmed', 'stageNumber', 'changed', 'hasComments']) {
-                            delete filters[key]
-                        }
-                        let nativeFilters = []
-                        
-                        if (confirmed != undefined) {
-                            nativeFilters.push({name: 'confirmation', isConfirmed: confirmed, workflowStageNumber: stageNumber})
-                        }
-                    
-                        if (changed) {
-                            nativeFilters.push({
-                                name: 'revisions', 
-                                includeAutoRevisions: false, 
-                                revisionAccountUserId: [],
-                                revisionStageNumber: null
-                            })
-                        }
-                
-                        if (hasComments) {
-                            nativeFilters.push({
-                                name: 'comments',
-                                hasComments: true
-                            })
-                        }
-                        
-                        return nativeFilters
-                    }, 
-                    targets: {}
-                },
-                workflowStages: {
-                    _fetch: async( { document, project } ) => {
-                        let { documentId, targetLanguageId } = document
-                        let assignment = scroid._smartcat.workflowAssignments(
-                            project.id, [documentId], targetLanguageId
-                        )
-                        // Todo: What if we need to update the document list?
-                        if ( !scroid.documentLists ) scroid.documentLists = {}
-                        let documentListId = await scroid.getDocumentListId(document, assignment)
-                        let documents = await assignment.documentsByDocumentListId(documentListId)
-                        let multidoc = find(
-                            documents, {id: documentId}
-                        )
-                        let {workflowStages} = find(
-                            multidoc.targetDocuments, {targetLanguageId}
-                        )
-                        merge(document.workflowStages, workflowStages)
+                _nativeFilterKeys: [
+                    'clientAccountIds', 'clientIds', 'createdByIds', 'creationDateFrom', 'creationDateTo',
+                    'deadlineFrom', 'deadlineTo', 'domainIds', 'managerUserIds', 'searchName', 'sourceLanguageIds',
+                    'statuses', 'targetLanguageIds', 'withoutClients', 'withoutManagers'
+                ],
+                multidocs: {
+                    _descriptor: 'name',
+                    commentThreads: {
+                        commentThreadText: {},
+                        comments: {}
                     },
-                    _fetchChildren: async ({ workflowStage, project, document }) => {
-                        // Todo: turn 👇 into something prettier
-                        await scroid.subSchema['workflowStages']._fetch({ project, document })
-                        return workflowStage
-                    },
-                    deadline: { _fetch: 'parent' },
-                    executives: { _fetch: 'parent' },
-                    freelancerInvitations: { _fetch: 'parent' },
-                    documentStages: {
-                        _fetch: 'parent',
-                        documentStageExecutives: {
-                            segmentRanges: {}
+                    documents: {
+                        _descriptor: 'name',
+                        segments: {
+                            _fetch: ({document, search}) => scroid.getSegments(document, {segmentFilter: search.segments}),
+                            _nativeFilterKeys: ['confirmed', 'stageNumber', 'changed', 'hasComments'], 
+                            targets: {}
+                        },
+                        workflowStages: {
+                            deadline: { _fetch: 'parent' },
+                            executives: { _fetch: 'parent' },
+                            freelancerInvitations: { _fetch: 'parent' },
+                            documentStages: {
+                                _fetch: 'parent',
+                                documentStageExecutives: {
+                                    segmentRanges: {}
+                                }
+                            }
                         }
-                    }
+                    }    
                 }
-            }    
+            }
         }
     }
 })
@@ -163,8 +148,192 @@ class Scroid extends AsyncIterable {
 
 // Fetches
 
-    async fetch_freelancers({ nativeFilters }) {
-        return this._smartcat.freelancers.search(nativeFilters)
+    fetch_exchangeRates() { return this._smartcat.freelancers.exchangeRates() }
+
+    async fetch_languages () { return this._smartcat.languages() }
+
+    async fetch_nativeServices () { 
+        return map({
+            1: 'Translation',
+            2: 'Editing',
+            3: 'Proofreading',
+            4: 'Postediting'
+        }, (name, id) => ({ id, name }))
+    }
+
+    async fetch_languagePairs () {
+
+        // Todo: introduce two-level iterators
+        let { languagePairs } = this
+        if ( languagePairs ) return languagePairs
+
+        languagePairs = []
+        let languages = await this.fetch('languages')
+        for (let sourceLanguage of languages) {
+            for (let targetLanguage of languages) {
+                if ( sourceLanguage != targetLanguage ) {
+                    languagePairs.push({
+                        name: map([sourceLanguage, targetLanguage], 'cultureName').join(' to '),
+                        sourceLanguage,
+                        targetLanguage
+                    })
+                }
+            }
+        }
+
+        assign(this, { languagePairs })
+        return languagePairs
+    }
+
+
+    async fetch_freelancers({ languagePair, nativeService, nativeFilters }) {
+        let { sourceLanguage, targetLanguage } = languagePair
+        return this._smartcat.freelancers.search({
+            targetLanguageId: targetLanguage.id,
+            sourceLanguageId: sourceLanguage.id,
+            serviceType: nativeService.id,
+            ... nativeFilters
+        })
+    }
+
+    async fetch_invoices() { return this._smartcat.invoices.get() }
+
+    async fetch_jobs({ nativeFilters }) { return this._smartcat.jobs.get(nativeFilters) }
+
+    async enrich_job(job) {
+        let { executiveCurrency, cost } = job
+        if ( executiveCurrency != 1 ) {
+            let exchangeRates = await this.fetch('exchangeRates')
+            let exchangeRate = exchangeRates[executiveCurrency]
+            job.costUSD = cost * 1.0 / exchangeRate    
+        } else {
+            job.costUSD = cost
+        }
+    }
+
+    async fetch_installations() { return this._smartcat.installations() }
+
+    async fetch_accounts({ installation }) {
+        let { _smartcat } = this
+        let { region } = installation
+        let accounts = 
+            region == this.region
+            ?
+            await _smartcat.auth.getAccountsForUser()
+            : await _smartcat.accounts(region)
+        remove(accounts, {isPersonal: true})
+
+        let savedAccounts = filter(this.load('accounts'),  { region })
+        for ( let savedAccount of savedAccounts) {
+            let { name } = savedAccount
+            let matchingAccount = find(accounts, { name })
+            assign(matchingAccount, savedAccount )
+        }
+
+        return accounts
+    }
+
+    async enrich_account( account ) {
+        account.alias = account.alias || account.name
+    }
+
+    async set_account(account) {
+        let { _smartcat, region } = this
+        let { id, installation, name, auth } = account
+        if ( installation.region == region ) {
+            this.smartcat = new Smartcat(auth, subdomainByRegion[region])
+            return _smartcat.auth.loginToAccount(id)
+        }
+        else {
+            let { region } = installation
+            await _smartcat.loginToRemoteAccount(installation.region, account.id)
+            _smartcat = this.prepareSmartcatForRegion(region)
+
+            let getContext = async () => {
+                let { username, password } = this.credentials.smartcat.login
+
+                let {userContext, accountContext} = await _smartcat.userContext()
+                let {isAuthenticated, inAccount} = userContext
+                if (!inAccount) {
+                    if (isAuthenticated)
+                        await _smartcat.auth.logout()
+                    let {redirectUrl} = await this.loginToServer(username, password, region)
+                    if (redirectUrl.match(/CrossAuth/)) {
+                        await _smartcat.auth.loginToAccount(auth.accountId)
+                    }
+                    return await getContext()
+                } else {
+                    return {userContext, accountContext}
+                }    
+    
+            }
+            
+            let {accountContext} = await getContext()
+    
+            let {accountName, availableAccounts} = accountContext
+    
+            if (accountName != name) {
+                let availableAccount = find(availableAccounts, { name })
+                await _smartcat.account.change(availableAccount.id)
+            }
+
+            let { auth } = account
+            let subdomain = subdomainByRegion[region]    
+            this.smartcat = new Smartcat(auth, subdomain)
+    
+    
+        }
+    }
+
+    async fetch_freelancers({ account, nativeFilters }) {
+        return this._smartcat.freelancers.search({
+            accountId: account.id,
+            ... nativeFilters
+        })
+    }
+
+    async fetch_teams() {
+        return this.load('teams')
+    }
+
+    async fetch_members({ nativeFilters, account }) {
+        let members = await this.smartcat.account.searchMyTeam(nativeFilters)
+
+        // Todo: Somehow move 👇 to enrich (introduce post_fetch or enrich_ for plural?)
+        for (let member of members) {
+            let { firstName, lastName } = member
+            let name = [firstName, lastName].join(' ')
+            assign(member, {
+                name, teams: []
+            })
+            renameKeys(member, {id: 'userId'})
+        }
+
+        let teams = await this.fetch('teams', { account })
+        for ( let team in teams ) {
+            let teamByTargetLanguage = teams[team]
+            for ( let targetLanguage in teamByTargetLanguage) {
+                let teamMembers = teamByTargetLanguage[targetLanguage]
+                if ( !isArray[teamMembers] ) teamMembers = [ teamMembers ]
+                for (let name of teamMembers ) {
+                    let matchingMember = find(members, { name })
+                    if ( !matchingMember )
+                        continue
+                    // Todo: turn 👇 into an array
+                    matchingMember.teams.push({team, targetLanguage})
+                }
+            }
+        }
+
+        return members
+    }
+
+    async fetch_invoiceJobs({ invoice }) {
+        let jobs = await this._smartcat.jobs.invoice(invoice.id)
+        for (let job of jobs) {
+            job.isPaid = !!job.datePaidByCustomer
+        }
+        return jobs
     }
 
     async fetch_projects({ nativeFilters }) {
@@ -179,7 +348,7 @@ class Scroid extends AsyncIterable {
             if (!targetLanguagesById[id])
                 targetLanguagesById[id] = targetLanguage.cultureName
         }
-        project.url = `https://${this.subDomain}smartcat.ai/project/${project.id}`
+        project.url = `https://${this.subdomain}smartcat.ai/project/${project.id}`
     }
 
     async fetch_multidocs({ project }) {
@@ -228,6 +397,98 @@ class Scroid extends AsyncIterable {
             renameKeys(assignee, {id: 'userId'})        
         }
         stage.assignment = this._smartcat.workflowAssignments(project.id, [documentId], targetLanguageId)
+    }
+
+    async fetch_segments({ document, nativeFilters }) {
+
+        let { documentId, targetLanguageId } = document
+    
+        let releaseDocument = () => {}
+        let filterSetId
+        if (nativeFilters) {
+            while ( this.freeze_documents[documentId] )
+                await this.freeze_documents[documentId]
+            this.freeze_documents[documentId] = new Promise(resolve => releaseDocument = () => {
+                resolve()
+                delete this.freeze_documents[documentId]
+                console.log(this.freeze_documents)
+            })
+            filterSetId = await this.getFilterSetId(document, nativeFilters)
+        }
+
+        let segments = await this._smartcat.segments(documentId, targetLanguageId, filterSetId)
+        releaseDocument()
+
+        return segments
+        
+    }
+
+    nativeFilters_segments(filters) {
+        let { 
+            confirmed, stageNumber, changed, hasComments 
+        } = filters
+        let nativeFilters = []
+        
+        if (!isUndefined(confirmed)) {
+            nativeFilters.push({name: 'confirmation', isConfirmed: confirmed, workflowStageNumber: stageNumber})
+        }
+    
+        if (changed) {
+            nativeFilters.push({
+                name: 'revisions', 
+                includeAutoRevisions: false, 
+                revisionAccountUserId: [],
+                revisionStageNumber: null
+            })
+        }
+
+        if (hasComments) {
+            nativeFilters.push({
+                name: 'comments',
+                hasComments: true
+            })
+        }
+        
+        return nativeFilters
+    }
+
+    enrich_target (target) {
+        target.language = targetLanguagesById[target.languageId]
+    }
+
+    async fetch_commentThreads(parents) {
+        let documents = await this.fetch('documents', parents)
+        let document = documents[0]
+        let segments = await this.fetch('segments', { ... parents, document }, { filters: { segments: { hasComments: true }}})
+        let commentThreads = map(segments, segment => ({
+            id: segment.topicId,
+            read: segment.commentState == 1,
+            sourceText: segment.source.text,
+            segmentNumber: segment.number
+        }))
+        return commentThreads
+    }
+
+    async fetch_commentThreadText(parents) {
+        let comments = await this.fetch('comments', parents)
+        let commentThreadText = map(comments, comment => {
+            let { created, userName, isRemoved, text } = comment
+            return `${created.slice(0, 16)} ${userName}: ${ isRemoved ? '[Removed]' : text }`
+        }).join('\n\n')
+        return commentThreadText
+    }
+
+    async fetch_comments({ commentThread, multidoc }) {
+        let comments = await this._smartcat.topics(commentThread.id).comments(multidoc.id, 'SEGMENT')
+        return comments
+    }
+
+    prepareSmartcatForRegion(region) {
+        let session = this.credentials.smartcat.sessionsByServer[region]
+        let cookie = `session-${sessionSuffixByRegion[region]}=${session}`
+        let subdomain = subdomainByRegion[region]
+        assign(this, { region })
+        return this._smartcat = new _Smartcat({cookie, subdomain})
     }
 
     async getProjects(options = {}) {
@@ -329,7 +590,7 @@ class Scroid extends AsyncIterable {
     }
 
     link({project, document, segment}) {
-        let domain = `https://${this.subDomain}smartcat.ai`
+        let domain = `https://${this.subdomain}smartcat.ai`
         let url, text
         if (project) {
             url = `${domain}/project/${project.id}`
@@ -368,6 +629,8 @@ class Scroid extends AsyncIterable {
         this.load('settings')
         this.load('credentials')
 
+        
+
         this._smartcat = new _Smartcat(username)
     }
 
@@ -392,9 +655,13 @@ class Scroid extends AsyncIterable {
         let value
         try {
             value = readYaml.sync(`${this.storageFolder}/${what}.yaml`)
-            let {account} = this
-            if (account && value[account.name]) {
-                value = value[account.name]
+            let { account } = this
+            if (account) {
+                let { name, alias } = account
+                name = alias || name
+                if ( value[name] ) {
+                    value = value[name]
+                }    
             }
         } catch(error) {
             value = {}
@@ -432,7 +699,7 @@ class Scroid extends AsyncIterable {
     }
 
     async list(what, options) {
-        let wugs = await this.all(what, options)
+        let wugs = await this.select(what, options)
 
         let {fields} = options
         if (!fields) {
@@ -470,17 +737,59 @@ class Scroid extends AsyncIterable {
         //     params: {apiToken}
         // })
 
-        this._smartcat = new _Smartcat()
+        this.prepareSmartcatForRegion('eu')
+        let { _smartcat } = this
 
+        this.freeze_documents = {}
+        this.freeze = {}
+        this.unfreeze = {}
+        this.unfrozen = {}
 
-        // this.log = {
-        //     project: 'name',
-        //     document: document => `${document.name} (${document.targetLanguage})`,
-        //     segment: segment => `#${segment.number} → ${segment.localizationContext[0]} → ${segment.source.text}`,
-        //     target: target => `${target.language} → ${target.text}`
-        // }
+        _smartcat._onError = async ({tryExecute, executeArgs = {}, stem, error}) => {
+            let {response, code} = error
+            if (response) {
+                let {status} = response
+                if (status == 403 && !executeArgs.ignore403) {
+                    while (stem._state.relogin == 'inProgress') {
+                        await sleep(stem._options._rateLimit)
+                    }
+                    let {relogin} = stem._state
+                    this.load('credentials')
+                    let {cookie} = error.request._headers
+                    let newCookie = stem._axios.defaults.headers.cookie
+                    if (cookie != newCookie) {
+                        console.log('Cookie has changed; trying with the new one...')
+                        cookie = newCookie
+                    } else {
+                        if (relogin == 'completed') {
+                            throw(error)
+                        } else {
+                            let { credentials } = this
+                            console.log('Trying to re-login...')
+                            stem._state.relogin = 'inProgress'
+                            let {username, password} = credentials.smartcat.login
+                            cookie = (await _smartcat.auth.signInUser(username, password)).cookie
+                            let region = findKey(sessionSuffixByRegion, r => r == cookie.match(/(?<=session-)\w+/)[0])
+                            credentials.smartcat.sessionsByServer[region] = cookie.match(/id=.*/)[0]
+                            this.dump({credentials})
+                            assign(stem._axios.defaults.headers, {cookie})
+                            // await _smartcat.account.change(auth.accountId)
+                            stem._state.relogin = 'completed'
+                        }
+                    }
+                    return await tryExecute({ignore403: true})
+                } else
+                    throw(error)
+            } else {
+                if (code == 'ETIMEDOUT' || code == 'ECONNRESET') {
+                    console.log(`${code}. Trying again...`)
+                    return tryExecute
+                } else {
+                    throw(error)
+                }
+            }
+        }    
 
-        this.hold_documents = {}
 
     }
 
@@ -505,42 +814,44 @@ class Scroid extends AsyncIterable {
 
     async addPayables(options) {
 
-        let {folder, filename} = options
-        let path = folder + filename
-
-        let payables = await csv2json().fromFile(path)
-        remove(payables, {added: 'TRUE'})
-
-        let promises = []
-
-        for (let payable of payables) {
-
-            let {
-                dateCompleted, currencyName, executiveUserId, jobDescription, pricePerUnit, unitCount, unitType,
-            } = payable
-
-            let currencyByName = {
-                'USD': 1,
-                'EUR': 2,
-                'RUB': 3
+        await this.iterate('accounts', async ({ account }) => {
+            let {folder, filename} = options
+            let path = folder + filename
+    
+            let payables = await csv2json().fromFile(path)
+            remove(payables, {added: 'TRUE'})
+    
+            let promises = []
+    
+            for (let payable of payables) {
+    
+                let {
+                    dateCompleted, currencyName, executiveUserId, jobDescription, pricePerUnit, unitCount, unitType,
+                } = payable
+    
+                let currencyByName = {
+                    'USD': 1,
+                    'EUR': 2,
+                    'RUB': 3
+                }
+    
+                let currency = currencyByName[currencyName]
+    
+                if (!currency) throw(new Error('Unknown currency: ' + currencyName))
+    
+                dateCompleted = new Date(Date.parse(dateCompleted)).toISOString()
+    
+    
+                promises.push(this._smartcat.jobs.external({
+                    dateCompleted, currency, executiveUserId, jobDescription, pricePerUnit, unitCount, unitType,
+                    serviceType: 'Misc'
+                }))
+    
+                // console.log(response)
             }
-
-            let currency = currencyByName[currencyName]
-
-            if (!currency) throw(new Error('Unknown currency: ' + currencyName))
-
-            dateCompleted = new Date(Date.parse(dateCompleted)).toISOString()
-
-
-            promises.push(this._smartcat.jobs.external({
-                dateCompleted, currency, executiveUserId, jobDescription, pricePerUnit, unitCount, unitType,
-                serviceType: 'Misc'
-            }))
-
-            // console.log(response)
-        }
-
-        await Promise.all(promises)
+    
+            await Promise.all(promises)
+        }, options)
 
         return payables
 
@@ -608,17 +919,32 @@ class Scroid extends AsyncIterable {
             ... options.set
         }
 
-        let teamTemplate = this.load('teams')[team]
         // Todo: insert the below into iteration, and get team from yaml
-        let assigneesByLanguage = await this.getTeam(teamTemplate)
+        // let teamTemplate = this.load('teams')[team]
+        // let assigneesByLanguage = await this.getTeam(teamTemplate)
+
+        let assigneesByLanguageByAccount = {}
 
         await this.iterate('workflowStages', async workflowStage => {
-            let {assignment, document, project, stageNumber} = workflowStage
+            // let { account } = workflowStage
+            // let assigneesByLanguage = assigneesByLanguageByAccount[account.id]
+            // if (!assigneesByLanguage) {
+            //     let teamTemplate = this.load('teams')[team]
+            //     assigneesByLanguage = await this.getTeam(teamTemplate)
+            //     assigneesByLanguageByAccount[account.id] = assigneesByLanguage
+            // }
+
+            let { account, assignment, document, project, stageNumber } = workflowStage
+            let { targetLanguage } = document
+            let addedAssignedUserIds = map(
+                filter(await this.fetch('members', { account }), 
+                    member => find(member.teams, {team, targetLanguage})
+                ), 'userId'
+            )
 
             let documentListId = await this.getDocumentListId(document, assignment)
 
             let saveDeadline = !!deadline
-            let addedAssignedUserIds = map(assigneesByLanguage[document.targetLanguage], 'userId')
             if (!overwriteDeadline) {
                 //Todo: combine into one function
                 if (isUndefined(workflowStage.deadline)) {
@@ -904,32 +1230,40 @@ class Scroid extends AsyncIterable {
         return nativeFilters
     }
 
+    createInvoice(options) {
+        let { jobs } = this
+        let jobIds = map(jobs, 'id')
+        if ( !jobIds ) throw new Error("No jobs selected.")
+        return this._smartcat.invoices.post({ jobIds, ... options})
+    }
+
+
     async createProject(options) {
-        // let {folder, filename} = options
-        // let path = this.config.folders[folder] + filename
-        let {path} = options
-        let file = {
-            content: fs.readFileSync(path),
-            name: path.match(/[^/\\]+$/)[0]
-        }
-
-        if (options.clientName) {
-            options.clientId = await this.getClientId(options.clientName)
-        }
-
-        if (!options.name) {
-            options.name = file.name
-        }
-
-        if (options.excludeExtension) {
-            options.name = options.name.replace(/\.[^.]*$/, '')
-        }
-
-        if (options.includeDate) {
-            options.name += ' ' + (new Date().toISOString()).replace(/^\d\d(\d+)-(\d+)-(\d+).*/, '$1$2$3')
-        }
-
-        return await this.smartcat.project().create(file, options)
+        this.iterate('accounts', async () => {
+            let { path } = options
+            let file = {
+                content: fs.readFileSync(path),
+                name: path.match(/[^/\\]+$/)[0]
+            }
+    
+            if (options.clientName) {
+                options.clientId = await this.getClientId(options.clientName)
+            }
+    
+            if (!options.name) {
+                options.name = file.name
+            }
+    
+            if (options.excludeExtension) {
+                options.name = options.name.replace(/\.[^.]*$/, '')
+            }
+    
+            if (options.includeDate) {
+                options.name += ' ' + (new Date().toISOString()).replace(/^\d\d(\d+)-(\d+)-(\d+).*/, '$1$2$3')
+            }
+    
+            await this.smartcat.project().create(file, options)
+        }, options)
     }
 
     async downloadMyTeam() {
@@ -959,21 +1293,26 @@ class Scroid extends AsyncIterable {
 
     async edit(what, options) {
         if (what == 'projects') {
+
             let {tmName, glossaryName, mtEngineSettings, markupPlaceholders} = options.set
-            let resources = this.load('resources')
-            let {translationMemories} = resources
-            let pretranslateRules = options.set.pretranslate
-            if (pretranslateRules) {
-                for (let rule of pretranslateRules) {
-                    rule.translationMemoryId = translationMemories[rule.tmName]
-                    delete rule.tmName
-                }
-            }
 
             await this.iterate('projects', async project => {
                 {
+                    // Todo: move resources to schema/model
+                    let resources = this.load('resources')
+                    let {translationMemories} = resources
+                    let pretranslateRules = options.set.pretranslate
+                    if (pretranslateRules) {
+                        for (let rule of pretranslateRules) {
+                            if ( rule.translationMemoryId )
+                                continue
+                            rule.translationMemoryId = translationMemories[rule.tmName]
+                            delete rule.tmName
+                        }
+                    }
+
                     // await this.iterateProjects({filters}, async ({project}) => {
-                        let nativeKeys = "name, description, deadline, clientId, domainId, vendorAccountId, externalTag".split(', ')
+                        let nativeKeys = "name, description, deadline, clientId, domainId, vendorAccountIds".split(', ')
                         let nativeSettings = assign(
                             pick(project, nativeKeys), 
                             pick(options.set, nativeKeys)
@@ -1606,12 +1945,12 @@ class Scroid extends AsyncIterable {
         if (segmentFilter) {
             segmentFilter = clone(segmentFilter)
             let nativeFilters = this.getNativeFilters(segmentFilter)
-            while ( this.hold_documents[documentId] )
-                await this.hold_documents[documentId]
-            this.hold_documents[documentId] = new Promise(resolve => releaseDocument = () => {
+            while ( this.freeze_documents[documentId] )
+                await this.freeze_documents[documentId]
+            this.freeze_documents[documentId] = new Promise(resolve => releaseDocument = () => {
                 resolve()
-                delete this.hold_documents[documentId]
-                console.log(this.hold_documents)
+                delete this.freeze_documents[documentId]
+                console.log(this.freeze_documents)
             })
             let filterSetId = await this.getFilterSetId(document, nativeFilters)
             assign(params, {filterSetId})
@@ -2061,140 +2400,37 @@ class Scroid extends AsyncIterable {
     async setAccount(name) {
         let accounts = this.load('accounts')
 
-        // if (!name) name = this.settings.defaultAccount
-        // if (!name) name = accounts[0].name
-
         let account = find(accounts, {name})
 
         assign(this, {account})
 
-        let {auth, server, fullName} = account
+        let {auth, region, fullName} = account
 
         if (fullName)
             name = fullName
 
-        this.subDomain = domainByServer[server]
-        let {subDomain} = this
+        this.subdomain = subdomainByRegion[region]
+        let {subdomain} = this
 
-        this.smartcat = new Smartcat({auth, subDomain})
+        this.smartcat = new Smartcat(auth, subdomain)
 
         let {credentials} = this        
 
         let {username, password} = credentials.smartcat.login
 
-        let session = this.credentials.smartcat.sessionsByServer[server]
-        let cookie = `session-${serverSessionSuffix[server]}=${session}`    
+        let session = this.credentials.smartcat.sessionsByServer[region]
+        let cookie = `session-${sessionSuffixByRegion[region]}=${session}`    
 
         let _defaults = {
-            baseURL: `https://${subDomain}smartcat.ai/api/`,
+            baseURL: `https://${subdomain}smartcat.ai/api/`,
             headers: {cookie}
         }
 
         this.__smartcat = Axios.create(_defaults)
 
-        this._smartcat = new _Smartcat({cookie, subDomain})
-
-        let {_smartcat} = this
-
-        let getContext = async () => {
-            let {userContext, accountContext} = await _smartcat.userContext()
-            let {isAuthenticated, inAccount} = userContext
-            if (!inAccount) {
-                if (isAuthenticated)
-                    await _smartcat.auth.logout()
-                let {redirectUrl} = await this.loginToServer(username, password, server)
-                if (redirectUrl.match(/CrossAuth/)) {
-                    let {accountId} = auth
-                    await _smartcat.auth.loginToAccount({accountId})
-                }
-                return await getContext()
-            } else {
-                return {userContext, accountContext}
-            }    
-
-         }
-        
-        let {accountContext} = await getContext()
-
-        let {accountName, availableAccounts} = accountContext
-
-        if (accountName != name) {
-            let availableAccount = find(availableAccounts, {name})
-            await _smartcat.account.change(availableAccount.id)
-        }
+        this._smartcat = new _Smartcat({cookie, subdomain})
 
 
-        // _smartcat._beforeExecute = async () => {
-        //     let {headers} = this._axios
-        //     if (!headers.cookie) {
-        //         headers.cookie = await this.auth.signInUser(username, password)
-        //     }
-        // }
-    
-        _smartcat._onError = async ({tryExecute, executeArgs = {}, stem, error}) => {
-            let {response, code} = error
-            if (response) {
-                let {status} = response
-                if (status == 403 && !executeArgs.ignore403) {
-                    while (stem._state.relogin == 'inProgress') {
-                        await sleep(stem._options._rateLimit)
-                    }
-                    let {relogin} = stem._state
-                    this.load('credentials')
-                    let {cookie} = error.request._headers
-                    let newCookie = stem._axios.defaults.headers.cookie
-                    if (cookie != newCookie) {
-                        console.log('Cookie has changed; trying with the new one...')
-                        cookie = newCookie
-                    } else {
-                        if (relogin == 'completed') {
-                            throw(error)
-                        } else {
-                            console.log('Trying to re-login...')
-                            stem._state.relogin = 'inProgress'
-                            cookie = (await _smartcat.auth.signInUser(username, password)).cookie
-                            credentials.smartcat.sessionsByServer[server] = cookie.match(/id=.*/)[0]
-                            this.dump({credentials})
-                            assign(stem._axios.defaults.headers, {cookie})
-                            await _smartcat.account.change(auth.accountId)
-                            stem._state.relogin = 'completed'
-                        }
-                    }
-                    return await tryExecute({ignore403: true})
-                } else
-                    throw(error)
-            } else {
-                if (code == 'ETIMEDOUT' || code == 'ECONNRESET') {
-                    console.log(`${code}. Trying again...`)
-                    return tryExecute
-                } else {
-                    throw(error)
-                }
-            }
-        }    
-
-        this._editor = function (document, options = {}) {
-            let {exclude} = options
-            let params = {
-                mode: 'manager', 
-                _page: 'Editor', 
-                documentId: document.documentId, 
-                languageIds: document.targetLanguageId
-            }
-            if (exclude) {
-                for (let what of exclude) {
-                    delete params[what]
-                }
-            }
-            return Axios.create(assign(_defaults, {params}))
-        }
-
-        this._marketplace = Axios.create({
-            baseURL: `https://${subDomain}marketplace.smartcat.ai/api/v1`,
-            headers: {
-                authorization: `Bearer ${credentials.smartcat.marketplaceTokensByServer[server]}`
-            }
-        })
     }
 
     async unassignSingleFreelancer(options, filters) {
@@ -2254,12 +2490,18 @@ class Scroid extends AsyncIterable {
 
     }
 
+    async remember(key, options) {
+        let wugs = await this.select(key, options)
+        this[key] = wugs
+    }
+
     async store(key, options) {
-        let wugs = await this.all(key, options)
+        let wugs = await this.select(key, options)
         this[key] = wugs
         let paths = options.include
         if (paths) {
             wugs = map(wugs, wug => {
+                // Todo: do via fetch 👇
                 let newWug = {}
                 for (let path of paths) {
                     let key = path
