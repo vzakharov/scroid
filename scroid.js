@@ -119,7 +119,7 @@ const schema = scroid => ({
                         comments: {}
                     },
                     multidocStages: {},
-                    documentListId: {},
+                    documentList: {},
                     documents: {
                         _descriptor: 'name',
                         segments: {
@@ -407,10 +407,12 @@ class Scroid extends AsyncIterable {
         assign(document, { wordsCount })
     }
 
-    async fetch_documentListId({ multidoc, project }) {
-        return this._smartcat
-            .workflowAssignments(project.id, [ multidoc.documentId ])
-            .createDocumentListId()
+    async fetch_documentList({ multidoc, project }) {
+        return {
+            id: await this._smartcat
+                .workflowAssignments(project.id, [ multidoc.documentId ])
+                .createDocumentListId()
+        }
     }
 
     async fetch_multidocStages(parents) {
@@ -420,10 +422,10 @@ class Scroid extends AsyncIterable {
         )
 
         // Todo: What if we need to update the document list?
-        if ( !this.documentLists ) this.documentLists = {}
-        let documentListId = await this.fetch('documentListId', parents)
+        // if ( !this.documentLists ) this.documentLists = {}
+        let documentList = await this.fetch('documentList', parents)
         // let documentListId = await this.getDocumentListId(multidoc)
-        let multidocStages = await assignment.getWorkflowStages({ documentListId })
+        let multidocStages = await assignment.getWorkflowStages({ documentListId: documentList.id })
         return multidocStages
     }
 
@@ -599,24 +601,6 @@ class Scroid extends AsyncIterable {
 
     async do(action, args, options) {
         return this[action](... args, options)
-    }
-
-    async getDocumentListId(multidoc) {
-        let { documentId, project } = multidoc
-        if (!this.documentLists) this.documentLists = {}
-        let { documentLists } = this
-        if (this.hold_documentList)
-            await this.hold_documentList
-        let documentListId = documentLists[documentId]
-        if (!documentListId) {
-            let assignment = this._smartcat.workflowAssignments(project.id, [ documentId ])
-            this.hold_documentList = (async () => {
-                documentLists[documentId] = documentListId = await assignment.createDocumentListId()
-            })();
-            await this.hold_documentList
-            delete this.hold_documentList
-        }
-        return documentListId
     }
 
     async fetch_bak(what, args) {
