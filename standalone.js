@@ -58,6 +58,15 @@ async function main() {
             let toLog = assign(new class Action{}, {action, args, options})
             console.log(toLog)
 
+            for (let setter in options.set || []) {
+                let { __calculate__ } = options.set[setter]
+                if (__calculate__) {
+                    for (let calc in __calculate__) {
+                        options.set[setter] = scroid['calc_'+calc](__calculate__[calc])
+                    }
+                }
+            }
+
             await scroid[action](...args, options)
 
             console.log(`Completed: ${JSON.stringify(toLog)}`)
