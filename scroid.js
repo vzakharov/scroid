@@ -67,7 +67,7 @@ const schema = scroid => ({
             'serviceType', 'specializations', 'minRate', 'maxRate', 
             'specializationKnowledgeLevels', 'rateRangeCurrency', 
             'sourceLanguageId', 'targetLanguageId', 
-            'onlyNativeSpeakers', 'accountId'
+            'onlyNativeSpeakers', 'accountId', 'searchMode'
         ]
     },
     installations: {
@@ -170,7 +170,9 @@ class Scroid extends AsyncIterable {
 
     fetch_exchangeRates() { return this._smartcat.freelancers.exchangeRates() }
 
-    async fetch_languages () { return this._smartcat.languages() }
+    async fetch_languages () { 
+        return this._smartcat.languages()
+    }
 
     async fetch_nativeServices () { 
         return map({
@@ -361,6 +363,10 @@ class Scroid extends AsyncIterable {
 
     async normalize_memberProfile( profile ) {
         profile.clientNames = map(profile.myTeamClientIds, id => find(profile.accountClients, {id}).name)
+        if ( profile.nativeLanguageId ) {
+            profile.nativeLanguage = await this.getLanguageById(profile.nativeLanguageId)
+            return 
+        }
     }
 
     async fetch_invoiceJobs({ invoice }) {
