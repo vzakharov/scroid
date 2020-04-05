@@ -7,6 +7,7 @@ const writeYaml = require('write-yaml')
 const json2csv = require('json2csv')
 const csv2json = require('csvtojson')
 const readline = require('readline').createInterface({input: process.stdin, output: process.stdout})
+const { GoogleSpreadsheet } = require('google-spreadsheet')
 
 const {promisify} = require('util')
 // const setImmediatePromise = promisify(setImmediate)
@@ -27,7 +28,8 @@ const {
 
 const {
     AsyncIterable, sleep, getDeep, setGetters,
-    iterate, setDeep, Select, matchesFilter, renameKeys, lastDefined
+    iterate, setDeep, Select, matchesFilter, renameKeys, lastDefined,
+    QuotaWatcher
 } = require('vz-utils')
 
 const pluralize = require('pluralize')
@@ -119,6 +121,7 @@ const schema = scroid => ({
                         comments: {}
                     },
                     multidocStages: {},
+                    sourceSegments: {},
                     documentList: {},
                     documents: {
                         _descriptor: 'name',
@@ -138,7 +141,7 @@ const schema = scroid => ({
                                 }
                             }
                         }
-                    }    
+                    }
                 },
                 fullDetails: {
 
@@ -331,27 +334,27 @@ class Scroid extends AsyncIterable {
         for (let member of members) {
             let { firstName, lastName } = member
             let name = [firstName, lastName].join(' ')
-            assign(member, {
-                name, teams: []
-            })
+            // assign(member, {
+            //     name, teams: []
+            // })
             renameKeys(member, {id: 'userId'})
         }
 
-        let teams = await this.fetch('teams', { account })
-        for ( let team in teams ) {
-            let teamByTargetLanguage = teams[team]
-            for ( let targetLanguage in teamByTargetLanguage) {
-                let teamMembers = teamByTargetLanguage[targetLanguage]
-                if ( !isArray(teamMembers) ) teamMembers = [ teamMembers ]
-                for (let name of teamMembers ) {
-                    let matchingMember = find(members, { name })
-                    if ( !matchingMember )
-                        continue
-                    // Todo: turn 👇 into an array
-                    matchingMember.teams.push({team, targetLanguage})
-                }
-            }
-        }
+        // let teams = await this.fetch('teams', { account })
+        // for ( let team in teams ) {
+        //     let teamByTargetLanguage = teams[team]
+        //     for ( let targetLanguage in teamByTargetLanguage) {
+        //         let teamMembers = teamByTargetLanguage[targetLanguage]
+        //         if ( !isArray(teamMembers) ) teamMembers = [ teamMembers ]
+        //         for (let name of teamMembers ) {
+        //             let matchingMember = find(members, { name })
+        //             if ( !matchingMember )
+        //                 continue
+        //             // Todo: turn 👇 into an array
+        //             matchingMember.teams.push({team, targetLanguage})
+        //         }
+        //     }
+        // }
 
         return members
     }
@@ -522,7 +525,15 @@ class Scroid extends AsyncIterable {
         target.language = languagesById[target.languageId]
     }
 
+    async fetch_sourceSegments({ multidoc, nativeFilters }) {
+        // let documents = await this.fetch('documents', { project, multidoc })
+        let document = multidoc.documents[0]
+        let sourceSegments = await this.fetch_segments({ document , nativeFilters })
+        return sourceSegments
+    }
+
     async fetch_commentThreads(parents) {
+        // Todo: user sourceSegments below
         let documents = await this.fetch('documents', parents)
         let document = documents[0]
         let segments = await this.fetch('segments', { ... parents, document }, { filters: { segments: { hasComments: true }}})
@@ -609,52 +620,6 @@ class Scroid extends AsyncIterable {
         return this[action](... args, options)
     }
 
-    async fetch_bak(what, args) {
-        let {
-            project, document, options
-        } = args
-
-        try {
-            switch(what) {
-                case 'freelancers': return this._smartcat.freelancers.search(options.search)
-                case 'projects': return this.getProjects(options)
-                
-                case 'documents': return this.getDocuments(project)
-        
-                case 'segments': return this.getSegments(document, {segmentFilter: options.search.segments})
-        
-                // Todo: merge with document.workflowStages
-                case 'freelancerInvitations': // fallthrough
-                // case 'documentStages':
-                case 'executives':
-                case 'deadline':
-                case 'requiresAssignment':
-                // case 'assignmentStages':
-                    let { workflowStage } = args
-                    // Todo: Fix the thing with deadline
-                    if (!workflowStage)
-                        return
-                    let { documentId, targetLanguageId } = document
-                    let assignment = this._smartcat.workflowAssignments(
-                        project.id, [documentId], targetLanguageId
-                    )
-                    if (!this.documentLists) this.documentLists = {}
-                    let documentListId = await this.getDocumentListId(document, assignment)
-                    let documents = await assignment.getWorkflowStages(documentListId)
-                    let multidoc = find(
-                        documents, {id: documentId}
-                    )
-                    let {workflowStages} = find(
-                        multidoc.targetDocuments, {targetLanguageId}
-                    )
-                    merge(document.workflowStages, workflowStages)
-                    return workflowStage[what]
-            }
-        } catch(e) {
-            console.error(e)
-        }
-
-    }
 
     link({project, document, segment}) {
         let domain = `https://${this.subdomain}smartcat.ai`
@@ -848,7 +813,7 @@ class Scroid extends AsyncIterable {
                 } else
                     throw(error)
             } else {
-                if (code == 'ETIMEDOUT' || code == 'ECONNRESET') {
+                if (code == 'ETIMEDOUT' || code == 'ECONNRESET' || code == 'ENOTFOUND') {
                     console.log(`${code}. Trying again...`)
                     return await execute()
                 } else {
@@ -991,16 +956,16 @@ class Scroid extends AsyncIterable {
 
 
     async editAssignments(options) {
-        let {deadline, team, overwriteDeadline} = {
-            team: 'default',
-            ... options.set
-        }
+        let { assigneeFilter, assignWithoutInviting, inviteWithAutoAssignment, deadline, overwriteDeadline } =
+            options.set
 
         // Todo: insert the below into iteration, and get team from yaml
         // let teamTemplate = this.load('teams')[team]
         // let assigneesByLanguage = await this.getTeam(teamTemplate)
 
         let assigneesByLanguageByAccount = {}
+
+        // options.wait = true
 
         await this.iterate('workflowStages', options, async workflowStage => {
             // let { account } = workflowStage
@@ -1011,16 +976,39 @@ class Scroid extends AsyncIterable {
             //     assigneesByLanguageByAccount[account.id] = assigneesByLanguage
             // }
 
-            let { account, assignment, document, project, stageNumber } = workflowStage
-            let { targetLanguage } = document
-            let members = await this.fetch('members', { account })
-            let addedAssignedUserIds = map(
-                filter(members, 
-                    member => find(member.teams, {team, targetLanguage})
-                ), 'userId'
+            let { account, assignment, document, project, stageNumber: stageNumber, multidoc } = workflowStage
+            let targetLanguages = map(multidoc.documents, 'targetLanguage')
+            let sourceLanguage = project.sourceLanguage.cultureName
+            let { targetLanguage, targetLanguageId } = document
+            // Todo: add workflowstage check besides source & target language
+            let members = await this.select('members', {
+                reload: 'members',
+                filters: {
+                    ... options.filters,
+                    members: {
+                        sourceLanguage,
+                        services: {
+                            contain: {
+                                targetLanguage: targetLanguages
+                            }
+                        },
+                        ... assigneeFilter
+                    }
+                }
+            })
+            let freelancers = filter(members, member =>
+                !!find(member.services, {
+                    sourceLanguage, targetLanguage
+                })
+            )
+            let freelancerIds = map(
+                freelancers, 
+                'userId'
             )
 
-            let documentListId = await this.getDocumentListId(document, assignment)
+            let documentListId = (
+                await this.fetch('documentList', { project, multidoc })
+            ).id
 
             let saveDeadline = !!deadline
             if (!overwriteDeadline) {
@@ -1030,10 +1018,16 @@ class Scroid extends AsyncIterable {
                 }
                 saveDeadline = !workflowStage.deadline
             }
-            await assignment.saveAssignments({
-                addedAssignedUserIds, deadline, saveDeadline, stageNumber, documentListId
-            })
-            noop()
+            if ( assignWithoutInviting ) {
+                await assignment.saveAssignments({
+                    addedAssignedUserIds: freelancerIds, deadline, saveDeadline, stageNumber, documentListId
+                })
+            } else {
+                await assignment.inviteFreelancersByDocumentListId({
+                    freelancerIds, deadline, saveDeadline, stage: stageNumber, documentListId, inviteWithAutoAssignment, targetLanguageId
+                })
+            }
+            noop()    
         })
         noop()
     }
@@ -2613,24 +2607,58 @@ class Scroid extends AsyncIterable {
         this[key] = wugs
         let paths = options.include
         if (paths) {
-            wugs = map(wugs, wug => {
-                // Todo: do via fetch 👇
-                let newWug = {}
-                for (let path of paths) {
-                    let key = path
-                    if (!isString(path)) {
-                        key = keys(path)[0]
-                        path = path[key]
-                    }
-                    newWug[key] = get(wug, path)
-                }
-                return newWug
-            })
+            wugs = this.mapWugsByPaths(wugs, paths)
         }
         let saveAs = options.as
         if (!saveAs)
             saveAs = key
         this.dump({wugs}, saveAs)
+    }
+
+    mapWugsByPaths(wugs, paths) {
+        return map(wugs, wug => {
+            // Todo: do via fetch 👇
+            let newWug = {}
+            for (let path of paths) {
+                let key = path
+                if (!isString(path)) {
+                    key = keys(path)[0]
+                    path = path[key]
+                }
+                newWug[key] = get(wug, path)
+            }
+            return newWug
+        })
+    }
+
+    async writeToGoogleSheet(key, options) {
+
+        let watcher = new QuotaWatcher({ rateLimit: 1 })
+        let doc = new GoogleSpreadsheet(options.sheet.id)
+        await watcher.run(async () => doc.useServiceAccountAuth(this.credentials.google))
+        await watcher.run(async () => doc.loadInfo())
+
+        let sheet = doc.sheetsByIndex[0]
+        await watcher.run(async () => sheet.clear())
+
+        let { columns } = options
+
+        await watcher.run(async () => sheet.setHeaderRow(columns))
+
+        let rows = []
+        await this.iterate(key, options, async wug => {
+            let row = {}
+            for (let column of columns) {
+                row[column] = get(wug, column)
+            }
+            rows.push(row)
+            if ( !(rows.length % 1000) ) {
+                await watcher.run(async () => sheet.addRows(rows))
+                rows = []
+            }
+        })
+        await watcher.run(async () => sheet.addRows(rows))
+
     }
 
     async buildStats(options) {
