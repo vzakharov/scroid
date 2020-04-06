@@ -1337,20 +1337,22 @@ class Scroid extends AsyncIterable {
 
         const nonLanguageHeadings = ['id', 'comments', 'maxLen']
 
-        let sheet = doc.sheetsByIndex[0]
+        for ( let sheet in doc.sheetsByIndex ) {
 
-        await sheet.loadHeaderRow()
-        let languageHeadings = difference(sheet.headerValues, nonLanguageHeadings)
-        let sourceLanguage = languageHeadings[0]
-        let targetLanguages = languageHeadings.slice(1)
-        let rows = await sheet.getRows()
-        let content = JSON.stringify(map(rows, row =>
-            row.id ?
-                {[row.id]: row[sourceLanguage]} :
-                row[sourceLanguage]
-        ))
-        let name = sheet.title + '.json'
-        return { name, content, sourceLanguage, targetLanguages }
+            await sheet.loadHeaderRow()
+            let languageHeadings = difference(sheet.headerValues, nonLanguageHeadings)
+            let sourceLanguage = languageHeadings[0]
+            let targetLanguages = languageHeadings.slice(1)
+            let rows = await sheet.getRows()
+            let content = JSON.stringify(map(rows, row =>
+                row.id ?
+                    {[row.id]: row[sourceLanguage]} :
+                    row[sourceLanguage]
+            ))
+            let name = sheet.title + '.json'
+            return { name, content, sourceLanguage, targetLanguages }
+    
+        }
     }
 
     async createProject(options) {
@@ -2665,31 +2667,37 @@ class Scroid extends AsyncIterable {
 
     async writeToGoogleSheet(key, options) {
 
-        let watcher = new QuotaWatcher({ rateLimit: 1 })
+        let sheetReadWatcher = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
+        let sheetWriteWatcher = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
         let doc = new GoogleSpreadsheet(options.sheet.id)
-        await watcher.run(async () => doc.useServiceAccountAuth(this.credentials.google))
-        await watcher.run(async () => doc.loadInfo())
+        await sheetReadWatcher.run(async () => doc.useServiceAccountAuth(this.credentials.google))
+        await sheetReadWatcher.run(async () => doc.loadInfo())
 
         let sheet = doc.sheetsByIndex[0]
-        await watcher.run(async () => sheet.clear())
+        await sheetWriteWatcher.run(async () => sheet.clear())
 
         let { columns } = options
 
-        await watcher.run(async () => sheet.setHeaderRow(columns))
+        await sheetWriteWatcher.run(async () => sheet.setHeaderRow(columns))
 
         let rows = []
+        let promises = []
+        let lastWrite = new Date()
         await this.iterate(key, options, async wug => {
             let row = {}
             for (let column of columns) {
                 row[column] = get(wug, column)
             }
             rows.push(row)
-            if ( !(rows.length % 1000) ) {
-                await watcher.run(async () => sheet.addRows(rows))
+            let now = new Date()
+            if ( now - lastWrite > 1000 ) {
+                promises.push(sheetWriteWatcher.run(async () => sheet.addRows(rows)))
                 rows = []
+                lastWrite = now
             }
         })
-        await watcher.run(async () => sheet.addRows(rows))
+        await Promise.all(promises)
+        await sheetWriteWatcher.run(async () => sheet.addRows(rows))
 
     }
 
