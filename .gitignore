@@ -5,3 +5,4 @@ private/
 package-lock.json
 .vscode/launch.json
 links.txt
+links.bat

@@ -20,7 +20,7 @@ const {
 const _ = require('lodash')
 
 const {
-    assign, capitalize, clone, compact, concat, cloneDeep, filter, find, findKey, first, flattenDeep, forEach, 
+    assign, capitalize, clone, compact, concat, cloneDeep, difference, filter, find, findKey, first, flattenDeep, forEach, 
     get, groupBy, includes, indexOf, isArray, isFunction, isEqual, isString, isUndefined, keyBy, keys, last, 
     map, mapKeys, mapValues, merge, noop, omit, pick, remove, reverse, round, sample, sortBy, sumBy, 
     toNumber, uniqBy, values
@@ -1330,15 +1330,46 @@ class Scroid extends AsyncIterable {
         fs.writeFileSync(path, content)
     }
 
+    async getSourceFromSheet(sheetId) {
+        let doc = new GoogleSpreadsheet(sheetId)
+        await doc.useServiceAccountAuth(this.credentials.google)
+        await doc.loadInfo()
+
+        const nonLanguageHeadings = ['id', 'comments', 'maxLen']
+
+        let sheet = doc.sheetsByIndex[0]
+
+        await sheet.loadHeaderRow()
+        let languageHeadings = difference(sheet.headerValues, nonLanguageHeadings)
+        let sourceLanguage = languageHeadings[0]
+        let targetLanguages = languageHeadings.slice(1)
+        let rows = await sheet.getRows()
+        let content = JSON.stringify(map(rows, row =>
+            row.id ?
+                {[row.id]: row[sourceLanguage]} :
+                row[sourceLanguage]
+        ))
+        let name = sheet.title + '.json'
+        return { name, content, sourceLanguage, targetLanguages }
+    }
+
     async createProject(options) {
         this.iterate('accounts', options, async () => {
-            let { path } = options
+            let { path, sheet } = options
             let apiOptions = pick(options, [
                 'sourceLanguage', 'targetLanguages', 'workflowStages', 'translationMemoryId', 'deadline', 'name'
             ])
-            let file = {
-                content: fs.readFileSync(path),
-                name: path.match(/[^/\\]+$/)[0]
+
+            let file = {}
+            if (path) {
+                file = {
+                    content: fs.readFileSync(path),
+                    name: path.match(/[^/\\]+$/)[0]
+                }    
+            } else if (sheet) {
+                let {name, content, sourceLanguage, targetLanguages} = await this.getSourceFromSheet(sheet.id)
+                assign(file, {name, content})
+                assign(apiOptions, {sourceLanguage, targetLanguages})
             }
     
             if (options.clientName) {
@@ -1360,6 +1391,7 @@ class Scroid extends AsyncIterable {
             await this.smartcat.project().create(file, apiOptions)
         })
     }
+
 
     async deleteJobs(options) {
         await this.iterate('jobs', options, async job => {
