@@ -46,7 +46,15 @@ const sessionSuffixByRegion = {
 
 const {stringify} = JSON
 
+const sheetReader = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
+const sheetWriter = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
+
+
 const schema = scroid => ({
+    spreadsheets: {
+        _nativeFilterKeys: ['id'],
+        sheets: {}
+    },
     convos: {
         _nativeFilterKeys: ['unseen']
     },
@@ -163,6 +171,21 @@ let languagesById = {}
 class Scroid extends AsyncIterable {
 
 // Fetches
+
+    async fetch_spreadsheets({ nativeFilters }) {
+        let { ids } = nativeFilters
+        if (!isArray(ids)) ids = [ids]
+        let spreadsheets = []
+        for ( let id in ids ) {
+            let doc = new GoogleSpreadsheet(id)
+            await sheetReader.run(() => doc.useServiceAccountAuth(this.credentials.google))
+            await sheetReader.run(() => doc.loadInfo())
+            doc.sheets = doc.sheetsByIndex
+            spreadsheets.push(doc)
+        }
+        return spreadsheets
+    }
+
 
     async fetch_convos({ nativeFilters }) {
         let { unseen } = nativeFilters
@@ -2667,18 +2690,16 @@ class Scroid extends AsyncIterable {
 
     async writeToGoogleSheet(key, options) {
 
-        let sheetReadWatcher = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
-        let sheetWriteWatcher = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
         let doc = new GoogleSpreadsheet(options.sheet.id)
-        await sheetReadWatcher.run(async () => doc.useServiceAccountAuth(this.credentials.google))
-        await sheetReadWatcher.run(async () => doc.loadInfo())
+        await sheetReader.run(() => doc.useServiceAccountAuth(this.credentials.google))
+        await sheetReader.run(() => doc.loadInfo())
 
         let sheet = doc.sheetsByIndex[0]
-        await sheetWriteWatcher.run(async () => sheet.clear())
+        await sheetWriter.run(() => sheet.clear())
 
         let { columns } = options
 
-        await sheetWriteWatcher.run(async () => sheet.setHeaderRow(columns))
+        await sheetWriter.run(() => sheet.setHeaderRow(columns))
 
         let rows = []
         let promises = []
@@ -2691,13 +2712,13 @@ class Scroid extends AsyncIterable {
             rows.push(row)
             let now = new Date()
             if ( now - lastWrite > 1000 ) {
-                promises.push(sheetWriteWatcher.run(async () => sheet.addRows(rows)))
+                promises.push(sheetWriter.run(() => sheet.addRows(rows)))
                 rows = []
                 lastWrite = now
             }
         })
         await Promise.all(promises)
-        await sheetWriteWatcher.run(async () => sheet.addRows(rows))
+        await sheetWriter.run(() => sheet.addRows(rows))
 
     }
 
