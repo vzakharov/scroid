@@ -49,7 +49,6 @@ const {stringify} = JSON
 const sheetReader = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
 const sheetWriter = new QuotaWatcher({ rateLimit: 10, watchPeriod: 100, maxCallsPerPeriod: 100 })
 
-
 const schema = scroid => ({
     spreadsheets: {
         _nativeFilterKeys: ['id'],
@@ -173,17 +172,20 @@ class Scroid extends AsyncIterable {
 // Fetches
 
     async fetch_spreadsheets({ nativeFilters }) {
-        let { ids } = nativeFilters
+        let ids = nativeFilters.id
         if (!isArray(ids)) ids = [ids]
         let spreadsheets = []
-        for ( let id in ids ) {
+        for ( let id of ids ) {
             let doc = new GoogleSpreadsheet(id)
             await sheetReader.run(() => doc.useServiceAccountAuth(this.credentials.google))
             await sheetReader.run(() => doc.loadInfo())
-            doc.sheets = doc.sheetsByIndex
             spreadsheets.push(doc)
         }
         return spreadsheets
+    }
+
+    async fetch_sheets({ spreadsheet }) {
+        return spreadsheet.sheetsByIndex
     }
 
 
@@ -264,6 +266,20 @@ class Scroid extends AsyncIterable {
 
     async fetch_installations() { return this._smartcat.installations() }
 
+    async use_installation(region) {
+        if ( region == this.region )
+            return { region }
+
+        await this._smartcat.loginToRemoteAccount(region)
+
+        let session = this.credentials.smartcat.sessionsByServer[region]
+        let cookie = `session-${sessionSuffixByRegion[region]}=${session}`
+        let subdomain = subdomainByRegion[region]
+        assign(this, { region })
+        this._smartcat = new _Smartcat({cookie, subdomain})
+        return { region }
+    }
+
     async fetch_accounts({ installation }) {
         let { _smartcat } = this
         let { region } = installation
@@ -291,6 +307,37 @@ class Scroid extends AsyncIterable {
         })
     }
 
+    async getContext() {
+        let { username, password } = this.credentials.smartcat.login
+        let { _smartcat, region } = this
+
+        let {userContext, accountContext} = await _smartcat.userContext()
+        let {isAuthenticated, inAccount} = userContext
+        if (!inAccount) {
+            if (isAuthenticated)
+                await _smartcat.auth.logout()
+            let {redirectUrl} = await this.loginToServer(username, password, region)
+            if (redirectUrl.match(/CrossAuth/)) {
+                await _smartcat.auth.loginToAccount(auth.accountId)
+            }
+            return await this.getContext()
+        } else {
+            return {userContext, accountContext}
+        }    
+
+    }
+
+    async use_account(id) {
+        while (true) {
+            let { accountContext } = await this.getContext()
+            let { accountId } = accountContext
+            if ( accountId == id )
+                return accountContext
+            await _smartcat.auth.loginToAccount(id)    
+        }
+    }
+    
+
     async set_account(account) {
         let { _smartcat, region } = this
         let { id, installation, name, auth } = account
@@ -303,26 +350,8 @@ class Scroid extends AsyncIterable {
             await _smartcat.loginToRemoteAccount(installation.region, account.id)
             _smartcat = this.setRegion(region)
 
-            let getContext = async () => {
-                let { username, password } = this.credentials.smartcat.login
 
-                let {userContext, accountContext} = await _smartcat.userContext()
-                let {isAuthenticated, inAccount} = userContext
-                if (!inAccount) {
-                    if (isAuthenticated)
-                        await _smartcat.auth.logout()
-                    let {redirectUrl} = await this.loginToServer(username, password, region)
-                    if (redirectUrl.match(/CrossAuth/)) {
-                        await _smartcat.auth.loginToAccount(auth.accountId)
-                    }
-                    return await getContext()
-                } else {
-                    return {userContext, accountContext}
-                }    
-    
-            }
-            
-            let {accountContext} = await getContext()
+            let {accountContext} = await this.getContext()
     
             let {accountName, availableAccounts} = accountContext
     
@@ -990,6 +1019,22 @@ class Scroid extends AsyncIterable {
 
         // options.wait = true
 
+        let members = await this.select('members', {
+            reload: 'members',
+            filters: {
+                ... options.filters,
+                members: {
+                    // sourceLanguage,
+                    // services: {
+                    //     contain: {
+                    //         targetLanguage: targetLanguages
+                    //     }
+                    // },
+                    ... assigneeFilter
+                }
+            }
+        })
+
         await this.iterate('workflowStages', options, async workflowStage => {
             // let { account } = workflowStage
             // let assigneesByLanguage = assigneesByLanguageByAccount[account.id]
@@ -1004,21 +1049,6 @@ class Scroid extends AsyncIterable {
             let sourceLanguage = project.sourceLanguage.cultureName
             let { targetLanguage, targetLanguageId } = document
             // Todo: add workflowstage check besides source & target language
-            let members = await this.select('members', {
-                reload: 'members',
-                filters: {
-                    ... options.filters,
-                    members: {
-                        sourceLanguage,
-                        services: {
-                            contain: {
-                                targetLanguage: targetLanguages
-                            }
-                        },
-                        ... assigneeFilter
-                    }
-                }
-            })
             let freelancers = filter(members, member =>
                 !!find(member.services, {
                     sourceLanguage, targetLanguage
@@ -1353,17 +1383,14 @@ class Scroid extends AsyncIterable {
         fs.writeFileSync(path, content)
     }
 
-    async getSourceFromSheet(sheetId) {
-        let doc = new GoogleSpreadsheet(sheetId)
-        await doc.useServiceAccountAuth(this.credentials.google)
-        await doc.loadInfo()
+    async createProjectFromSheets(options) {
 
-        const nonLanguageHeadings = ['id', 'comments', 'maxLen']
+        const metaHeadings = ['id', 'comments', 'maxLen']
 
-        for ( let sheet in doc.sheetsByIndex ) {
+        await this.iterate('sheets', options, async sheet => {
 
-            await sheet.loadHeaderRow()
-            let languageHeadings = difference(sheet.headerValues, nonLanguageHeadings)
+            await sheetReader.run(() => sheet.loadHeaderRow())
+            let languageHeadings = difference(sheet.headerValues, metaHeadings)
             let sourceLanguage = languageHeadings[0]
             let targetLanguages = languageHeadings.slice(1)
             let rows = await sheet.getRows()
@@ -1372,31 +1399,52 @@ class Scroid extends AsyncIterable {
                     {[row.id]: row[sourceLanguage]} :
                     row[sourceLanguage]
             ))
-            let name = sheet.title + '.json'
-            return { name, content, sourceLanguage, targetLanguages }
-    
-        }
+            let file = { 
+                name: sheet.title + '.json', 
+                content 
+            }
+
+            assign(options, {
+                sourceLanguage, targetLanguages
+            })
+
+            await this.createProjectFromFile({
+                ...options, 
+                file, 
+                name: sheet.spreadsheet.title + ' — ' + sheet.title
+            })
+
+        })
+
     }
 
     async createProject(options) {
-        this.iterate('accounts', options, async () => {
-            let { path, sheet } = options
-            let apiOptions = pick(options, [
-                'sourceLanguage', 'targetLanguages', 'workflowStages', 'translationMemoryId', 'deadline', 'name'
-            ])
+            let { path, from, file } = options
 
-            let file = {}
-            if (path) {
-                file = {
-                    content: fs.readFileSync(path),
-                    name: path.match(/[^/\\]+$/)[0]
-                }    
-            } else if (sheet) {
-                let {name, content, sourceLanguage, targetLanguages} = await this.getSourceFromSheet(sheet.id)
-                assign(file, {name, content})
-                assign(apiOptions, {sourceLanguage, targetLanguages})
+
+            if (file) 
+                return this.createProjectFromFile(options)
+            else {
+                if (path) {
+                    options.file = {
+                        content: fs.readFileSync(path),
+                        name: path.match(/[^/\\]+$/)[0]
+                    }
+                } else if (from == 'sheets') {
+                    return this.createProjectFromSheets(options)
+                }
             }
-    
+    }
+
+    async createProjectFromFile(options) {
+        let { file } = options
+
+        let apiOptions = pick(options, [
+            'sourceLanguage', 'targetLanguages', 'workflowStages', 'translationMemoryId', 'deadline', 'name'
+        ])
+
+        await this.iterate('accounts', options, async () => {
+
             if (options.clientName) {
                 apiOptions.clientId = await this.getClientId(options.clientName)
             }
@@ -1405,18 +1453,17 @@ class Scroid extends AsyncIterable {
                 apiOptions.name = file.name
             }
     
-            if (options.excludeExtension) {
+            if (!options.includeExtension) {
                 apiOptions.name = apiOptions.name.replace(/\.[^.]*$/, '')
             }
     
-            if (options.includeDate) {
+            if (!options.excludeDate) {
                 apiOptions.name += ' ' + (new Date().toISOString()).replace(/^\d\d(\d+)-(\d+)-(\d+).*/, '$1$2$3')
             }
     
             await this.smartcat.project().create(file, apiOptions)
         })
     }
-
 
     async deleteJobs(options) {
         await this.iterate('jobs', options, async job => {
