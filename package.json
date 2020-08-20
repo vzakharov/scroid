@@ -13,7 +13,7 @@
     "@hapi/hapi": "^18.3.1",
     "api2js": "^0.1.0",
     "axios": "^0.18.0",
-    "bcrypt": "^3.0.6",
+    "bcrypt": "^5.0.0",
     "csvtojson": "^2.0.8",
     "diff": "^3.5.0",
     "google-spreadsheet": "^3.0.10",
