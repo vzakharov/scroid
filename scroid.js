@@ -153,6 +153,7 @@ const schema = scroid => ({
                 fullDetails: {
 
                 },
+                contributors: {},
                 translationMemories: {}
             }
         }
@@ -495,6 +496,8 @@ class Scroid extends AsyncIterable {
         stage.stageNumber = parseInt(stage.id)
         delete stage.id
         stage.deadline = stage.documents[0].deadline
+        if (!stage.deadline)
+          stage.deadline = stage.project.deadline
         delete stage.documents
     }
 
@@ -510,7 +513,7 @@ class Scroid extends AsyncIterable {
 
     normalize_workflowStage(stage, { project, document }) {
         let { documentId, targetLanguageId } = document
-        stage.wordsLeft = document.wordsCount - stage.wordsTranslated
+        stage.wordsLeft = document.wordsCount * (100 - stage.progress) / 100
         for (let assignee of stage.executives || []) {
             renameKeys(assignee, {id: 'userId'})        
         }
@@ -518,6 +521,8 @@ class Scroid extends AsyncIterable {
         renameKeys(stage, {
             number: 'stageNumber'
         })
+        if (!stage.deadline)
+          stage.deadline = project.deadline
     }
 
     async fetch_segments({ document, nativeFilters }) {
@@ -532,7 +537,7 @@ class Scroid extends AsyncIterable {
             this.freeze_documents[documentId] = new Promise(resolve => releaseDocument = () => {
                 resolve()
                 delete this.freeze_documents[documentId]
-                console.log(this.freeze_documents)
+                // console.log(this.freeze_documents)
             })
             filterSetId = await this.getFilterSetId(document, nativeFilters)
         }
@@ -618,6 +623,17 @@ class Scroid extends AsyncIterable {
 
     async fetch_fullDetails({ project }) {
         return this._smartcat.projects(project.id).full()
+    }
+
+    async fetch_contributors({ project }) {
+        let team = await this._smartcat.projects(project.id).team()
+        let { executivesByJobStatus } = team
+        let contributors = []
+        for ( let e of executivesByJobStatus ) {
+            for ( let executive of e.executives ) {
+                find()
+            }
+        }
     }
 
     async fetch_translationMemories({ project }) {
@@ -904,13 +920,16 @@ class Scroid extends AsyncIterable {
         let payables = await csv2json().fromFile(path)
         remove(payables, {added: 'TRUE'})
             
-        await this.iterate('accounts', options, async ({ account }) => {
+        await this.iterate('accounts', options, async ( account ) => {
     
             let existingJobs = uniqueOnly &&
                 await this.select('jobs', {
                     filters: {
                         accounts: {
                             name: account.name
+                        },
+                        jobs: {
+                            paymentStateFilter: 0
                         }
                     }
                 })
@@ -922,6 +941,12 @@ class Scroid extends AsyncIterable {
                 let {
                     dateCompleted, currencyName, executiveUserId, jobDescription, pricePerUnit, unitCount, unitType,
                 } = payable
+
+                if (find(existingJobs, {
+                    executiveProfileUrl: 'marketplace/user/' + executiveUserId, 
+                    projectName: jobDescription
+                }))
+                    continue
     
                 let currencyByName = {
                     'USD': 1,
@@ -1064,12 +1089,17 @@ class Scroid extends AsyncIterable {
             ).id
 
             let saveDeadline = !!deadline
-            if (!overwriteDeadline) {
+            if (!overwriteDeadline || overwriteDeadline == 'ifPast') {
                 //Todo: combine into one function
                 if (isUndefined(workflowStage.deadline)) {
                     await this.fetch('deadline', {project, document, workflowStage}) 
+                    noop()
                 }
-                saveDeadline = !workflowStage.deadline
+                let currentDeadline = workflowStage.deadline
+                if (!currentDeadline) {
+                  currentDeadline = project.deadline
+                }
+                saveDeadline = !currentDeadline || new Date(currentDeadline) < new Date()
             }
             if ( assignWithoutInviting ) {
                 await assignment.saveAssignments({
@@ -1358,6 +1388,7 @@ class Scroid extends AsyncIterable {
     }
 
     createInvoice(options) {
+      return this.iterate('accounts', options, async ({ account }) => {
         let { jobIds } = options
         if ( !jobIds ) {
             let { jobs } = this
@@ -1365,6 +1396,7 @@ class Scroid extends AsyncIterable {
         }
         if ( !jobIds ) throw new Error("No jobs selected.")
         return this._smartcat.invoices.post({ jobIds, ... options})
+      })
     }
 
     async processFile(options) {
@@ -2060,53 +2092,6 @@ class Scroid extends AsyncIterable {
     }
 
 
-    async getDocuments(project) {
-        for (let targetLanguage of project.targetLanguages) {
-            let { id, cultureName } = targetLanguage
-            if (!languagesById[id])
-                languagesById[id] = cultureName
-        }
-        if (!project.documents) {
-            project.documents = []
-            let multidocs = await this._smartcat.projects(project.id).allDocuments()
-            for (let multidoc of multidocs) {
-                let { wordsCount } = multidoc
-                for (let document of multidoc.targets) {
-                    renameKeys(document, {languageId: 'targetLanguageId'})
-                    document.id = [document.documentId, document.targetLanguageId].join('_')
-                    document.targetLanguage = languagesById[document.targetLanguageId]
-                    document.name = [multidoc.name, document.targetLanguage].join('_')
-                    assign(document, { wordsCount, multidoc})                    
-                    project.documents.push(document)
-                }
-            }
-        }
-
-        for (let document of project.documents) {
-            let {documentId, targetLanguageId} = decomposeDocumentId(document.id)
-            assign(document, {documentId, targetLanguageId})
-            document.url = this.link({document}).url
-            // if (!project.targetLanguagesById[targetLanguageId]) {
-            //     project.targetLanguagesById[targetLanguageId] = document.targetLanguage
-            // }
-            
-            let i = 1
-            for (let stage of document.workflowStages) {
-                stage.stageNumber = i++
-                stage.wordsLeft = document.wordsCount - stage.wordsTranslated
-                for (let assignee of stage.executives || []) {
-                    renameKeys(assignee, {id: 'userId'})        
-                }
-                stage.assignment = this._smartcat.workflowAssignments(project.id, [documentId], targetLanguageId)
-            }
-    
-            Object.defineProperty(document, 'project', {get: () => project})
-        }
-
-        return project.documents
-    }
-
-
 
     getRanges(segments) {
 
@@ -2161,7 +2146,7 @@ class Scroid extends AsyncIterable {
             this.freeze_documents[documentId] = new Promise(resolve => releaseDocument = () => {
                 resolve()
                 delete this.freeze_documents[documentId]
-                console.log(this.freeze_documents)
+                // console.log(this.freeze_documents)
             })
             let filterSetId = await this.getFilterSetId(document, nativeFilters)
             assign(params, {filterSetId})
@@ -2759,13 +2744,15 @@ class Scroid extends AsyncIterable {
             rows.push(row)
             let now = new Date()
             if ( now - lastWrite > 1000 ) {
-                promises.push(sheetWriter.run(() => sheet.addRows(rows)))
-                rows = []
                 lastWrite = now
+                // promises.push(sheetWriter.run(() => sheet.addRows(rows)))
+                await sheet.addRows(rows)
+                rows = []
             }
         })
         await Promise.all(promises)
-        await sheetWriter.run(() => sheet.addRows(rows))
+        // await sheetWriter.run(() => sheet.addRows(rows))
+        await sheet.addRows(rows)
 
     }
 
