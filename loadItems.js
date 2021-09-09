@@ -244,33 +244,30 @@ loadItems = async () => {
                         
                         ;(async (item) => {
 
-                            let segments = segmentsByDocument[documentId]
+                            let filterSetId = (await getThing(
+                                'filterSets',
+                                documentId,
+                                () => post(
+                                    `api/Documents/${document.id}/SegmentsFilter?mode=manager`,
+                                    [
+                                        ... segmentFilter, 
+                                        {name:"language", targetLanguageIds: _.map(document.targets, 'languageId')}
+                                    ]
+                                )
+                            )).id
 
-                            if ( !segments ) {
-                                if ( !segmentPromises[documentId] ) {
-                                    segmentPromises[documentId] = new Promise(async resolve => {
-                                        let filterSetId = (await post(
-                                            `api/Documents/${document.id}/SegmentsFilter?mode=manager`,
-                                            [
-                                                ... segmentFilter, 
-                                                {name:"language", targetLanguageIds: _.map(document.targets, 'languageId')}
-                                            ]
-                                        )).id
-                
-                                        let segments = (await get(
-                                            `api/Segments?start=0&limit=1000&mode=manager`,
-                                            {
-                                                documentId,
-                                                filterSetId
-                                            }
-                                        )).items
-
-                                        resolve(segments)
-                                    })
-                                }
-                                segments = await segmentPromises[documentId]
-                            }
-
+                            let segments = (await getThing(
+                                'segments',
+                                documentId,
+                                () => get(
+                                    `api/Segments?start=0&limit=1000&mode=manager`,
+                                    {
+                                        documentId,
+                                        filterSetId
+                                    }
+                                )
+                            )).items
+                            
                             for (let segment of segments) {
                                 ;(async (item) => {
                                     let { number, id, commentState, topicId, wordsCount } = segment
