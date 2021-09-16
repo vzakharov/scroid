@@ -411,7 +411,7 @@ scroid.doAction = {
           }${
             item.stage.wordsLeft
           } words until ${
-            calculatedDeadline.toUTCString()
+            calculatedDeadline.toUTCString().slice(0,19)+':00 UTC'
           } 👉 ${
             item.target.url
           }`
@@ -419,8 +419,8 @@ scroid.doAction = {
         item.nudged = true
 
         if ( !_.filter( items, {assignee: {id}, nudged: false} ).length )
-          console.log(id, message.body)
-          // scroid.sendMessage(id, message.body)
+          // console.log(id, message.body)
+          scroid.sendMessage(id, message.body)
         
         // setTimeout(() => 
         //   scroid.sendMessage(id, `${overdue ? 'OVERDUE! ' : ''}${item.stage.wordsLeft} words until ${calculatedDeadline.toDateString()} 👉 ${item.target.url}`),
