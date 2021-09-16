@@ -339,6 +339,43 @@ scroid.sendMessage = async (userId, message) => {
 
 }
 
+scroid.confirm = ( item, text = item.segment.translation ) =>
+  put(`
+    api/Segments/${
+      item.segment.id
+    }/SegmentTargets/${
+      item.target.language.id
+    }/Confirm?documentId=${
+      item.document.id
+    }&mode=manager&ignoreWarnings=true`,
+    { 
+      text, tags:[]
+    }
+  )
+
+scroid.editSegment = async ( item, text, { confirm } ) => {
+  let { segment, target, document } = item
+  let editResult = await put(
+    `api/Segments/${
+      segment.id
+    }/SegmentTargets/${
+      target.language.id
+    }?documentId=${
+      document.id
+    }&saveType=0&mode=manager&stageNumber=0`,
+    {
+      text, tags:[]
+    }
+  )
+  if ( confirm )
+    return {
+      editResult,
+      confirmResult: await scroid.confirm(item, text)
+    }
+  else
+    return { editResult }
+}
+
 scroid.doAction = {
 
     nudge: async item => {
@@ -346,19 +383,61 @@ scroid.doAction = {
         let { assignee } = item
         let { id } = assignee
 
-        scroid.nudged = scroid.nudged || []
+        // scroid.nudged = scroid.nudged || []
+        item.nudged = false
 
-        if ( !assignee.nudged ) {
+        let message = getThing( 'message', id, () => (
+          {body: 'Hello, for your convenience, here are the jobs that are either overdue or coming due within the next 24 hours:'}) 
+        )
 
-            _.filter(items, {assignee: {id}}).forEach( item => item.assignee.nudged = true )
+        // if ( !message.body )
 
-            await scroid.sendMessage(id, settings.nudgeMessage || "Hello, please pay attention to the following overdue job(s):")
+        // if ( !assignee.nudged ) {
 
-        }
+        //     _.filter(items, {assignee: {id}}).forEach( item => item.assignee.nudged = true )
 
-        await scroid.sendMessage(id, `${item.stage.wordsLeft} words until ${item.stage.calculatedDeadline.toDateString()} 👉 ${item.target.url}`)
+        //     await scroid.sendMessage(id, settings.nudgeMessage || "Hello, for your convenience, here are the jobs that are either overdue or coming due within the next 24 hours:")
+
+        // }
+        
+        let { calculatedDeadline } = item.stage
+
+        let overdue = calculatedDeadline < new Date()
+        
+        message.body += 
+          '\n' 
+          + `${
+            overdue ? 'OVERDUE! ' : ''
+          }${
+            item.stage.wordsLeft
+          } words until ${
+            calculatedDeadline.toUTCString()
+          } 👉 ${
+            item.target.url
+          }`
+        
+        item.nudged = true
+
+        if ( !_.filter( items, {assignee: {id}, nudged: false} ).length )
+          console.log(id, message.body)
+          // scroid.sendMessage(id, message.body)
+        
+        // setTimeout(() => 
+        //   scroid.sendMessage(id, `${overdue ? 'OVERDUE! ' : ''}${item.stage.wordsLeft} words until ${calculatedDeadline.toDateString()} 👉 ${item.target.url}`),
+        //   200
+        // )
+
+    },
+
+    pretranslate: async item => {
+
+      let { segment, target, document} = item
+      let { text } = segment.matches[0]
+
+      await scroid.editSegment(item, text, { confirm: true })
 
     }
+
 
 }
 
