@@ -8,6 +8,7 @@ const uidSequence = [
                 'segment'
 ]
 
+
 const addItem = item => {
     item = {... item}
     items.push(item)
@@ -35,10 +36,16 @@ const uid = item => ({
         .join('_')
     })
 
-_fetch = function(url, {method, params, body}) {
+totalRequests = 0
+
+// getTotalRequests = () => totalRequests
+
+requestLimit = 100
+
+_fetch = async function(url, {method, params, body}) {
   if (!method) method = 'POST'
   let headers = { TheCookie }
-  fetchArgs = { method, headers }
+  let fetchArgs = { method, headers }
   if (body) {
     fetchArgs.body = JSON.stringify(body)
     headers['Content-Type'] = 'application/json'
@@ -48,7 +55,12 @@ _fetch = function(url, {method, params, body}) {
    if (url.includes(char)) char = '&'
    url += char + new URLSearchParams(params).toString()
   }
-  return fetch(url, fetchArgs)
+  while ( totalRequests > requestLimit )
+    await sleep(1000)
+  totalRequests++
+  let result = await fetch(url, fetchArgs)
+  totalRequests--
+  return result
 }
 
 
@@ -76,6 +88,8 @@ call = async function(path, args) {
 post = (path, body, args) => call(path, {method:'POST', body, ...args})
 get = (path, params, args) => call(path, {method:'GET', params, ...args})
 put = (path, body, args) => call(path, {method:'PUT', body, ...args})
+
+sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 prepare = async function() {}
 
@@ -340,8 +354,7 @@ scroid.sendMessage = async (userId, message) => {
 }
 
 scroid.confirm = ( item, text = item.segment.translation ) =>
-  put(`
-    api/Segments/${
+  put(`api/Segments/${
       item.segment.id
     }/SegmentTargets/${
       item.target.language.id
@@ -387,18 +400,9 @@ scroid.doAction = {
         item.nudged = false
 
         let message = getThing( 'message', id, () => (
-          {body: 'Hello, for your convenience, here are the jobs that are either overdue or coming due within the next 24 hours:'}) 
+          {body: 
+            `Hello, fya, jobs that are either overdue or due in less than ${settings.hoursBeforeDeadlineLessThan} hours:`}) 
         )
-
-        // if ( !message.body )
-
-        // if ( !assignee.nudged ) {
-
-        //     _.filter(items, {assignee: {id}}).forEach( item => item.assignee.nudged = true )
-
-        //     await scroid.sendMessage(id, settings.nudgeMessage || "Hello, for your convenience, here are the jobs that are either overdue or coming due within the next 24 hours:")
-
-        // }
         
         let { calculatedDeadline } = item.stage
 
@@ -418,14 +422,10 @@ scroid.doAction = {
         
         item.nudged = true
 
-        if ( !_.filter( items, {assignee: {id}, nudged: false} ).length )
-          // console.log(id, message.body)
+        if ( !_.filter( items, {assignee: {id}, nudged: false} ).length ) {
+          debugger
           scroid.sendMessage(id, message.body)
-        
-        // setTimeout(() => 
-        //   scroid.sendMessage(id, `${overdue ? 'OVERDUE! ' : ''}${item.stage.wordsLeft} words until ${calculatedDeadline.toDateString()} 👉 ${item.target.url}`),
-        //   200
-        // )
+        }
 
     },
 
@@ -436,10 +436,25 @@ scroid.doAction = {
 
       await scroid.editSegment(item, text, { confirm: true })
 
+    },
+
+    copySourceToTarget: async item => {
+      await scroid.batchOperation(item, 'copySourceToTarget')
+      await sleep(1000)
+      return scroid.batchOperation(item, 'confirm')
     }
 
 
 }
+
+scroid.batchOperation = ( item, operation ) =>
+  post(`api/SegmentTargets/BatchOperation/${
+    operation
+  }?documentId=${
+    item.document.id
+  }&languageIds[]=${
+    item.target.language.id
+  }&mode=manager`)
 
 scroid.go = async () => {
 
