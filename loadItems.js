@@ -1,4 +1,74 @@
-scroid = {}
+S = scroid = {}
+
+// action = 'confirm'
+// loadMatches = false
+// emptyOnly = false
+// nonemptyOnly = true
+// segmentFilter = [
+//   {name: "last-revision-is-not-confirmed"}
+// ]
+
+action = 'pretranslate'
+matchPercentage = 99
+discardIfNoMatches = true
+loadMatches = true
+emptyOnly = true
+nonemptyOnly = false
+segmentFilter = [
+  {
+    "name": "confirmation",
+    "isConfirmed": false,
+    "workflowStageNumber": 1
+  }
+]
+
+
+cookie = 'session-us=id=b4943cecd3a143e637fa3f06&key=tLJ0BRvctr4fdNLD'
+proxy = ''
+serverUrl = 'us.smartcat.com'
+settings = {instantAction: true, confirm: false, retryIfError: true, doSegmentsByOne: false}
+unconfirmedOnly = true
+level = 'segment'
+path = [
+  "project",
+  "document",
+  "target",
+  "segment"
+]
+docFilter = {
+  "documentTargetStatuses": [],
+  "stageNumbersWithNoAssignments": [],
+  "stageNumbersWithIncompleteState": [
+    1
+  ]
+}
+projectStatuses = [
+  0,
+  1,
+  2
+]
+filters = [
+  {
+    "type": "target",
+    "id": "1034",
+    "inclusive": true
+  },
+  {
+    "type": "target",
+    "id": "3084",
+    "inclusive": true
+  },
+  {
+    "type": "target",
+    "id": "1036",
+    "inclusive": true
+  },
+    {
+    "type": "target",
+    "id": "21514",
+    "inclusive": true
+  }
+]
 
 const uidSequence = [
     'project',
@@ -8,25 +78,28 @@ const uidSequence = [
                 'segment'
 ]
 
-
 const addItem = item => {
     item = {... item}
     items.push(item)
     let addUid = (typeN, parentUid) => {
-        if ( log(typeN, "typeN") >= uidSequence.length ) 
+        if ( typeN >= uidSequence.length ) 
             return true
         let type = uidSequence[typeN]
-        let subItem = log(item[type], 'subItem')
+        let subItem = item[type]
         if ( !subItem )
             return addUid(typeN + 1, parentUid)
         if ( subItem.uid )
             return addUid(typeN + 1, subItem.uid)
         item.uid = subItem.uid = 
-            log(( parentUid ? parentUid + '_' : '' )
-            + subItem.id.toString().replace(/\W/g, ''), "uid")
+            ( parentUid ? parentUid + '_' : '' )
+            + subItem.id.toString().replace(/\W/g, '')
         return addUid(typeN + 1, subItem.uid)
     }
     addUid(0,'')
+    if ( settings.instantAction ) {
+      // debugger
+      scroid.goForItem(item)
+    }
 }
 
 const uid = item => ({
@@ -44,7 +117,7 @@ requestLimit = 100
 
 _fetch = async function(url, {method, params, body}) {
   if (!method) method = 'POST'
-  let headers = { TheCookie }
+  let headers = proxy ? { TheCookie } : { cookie }
   let fetchArgs = { method, headers }
   if (body) {
     fetchArgs.body = JSON.stringify(body)
@@ -64,7 +137,7 @@ _fetch = async function(url, {method, params, body}) {
 }
 
 
-call = async function(path, args) {
+call = async function(path, args, retry) {
   let { item } = args
   if (item) serverUrl = item.serverUrl
   let url = 'https://' + proxy + serverUrl + '/' + path
@@ -73,7 +146,12 @@ call = async function(path, args) {
     if ( item ) {
         item.processed = true
         item.pending = false
-        item.succeeded = response.ok    
+        item.succeeded = !!response.ok
+        item.failed = !response.ok
+        if ( settings.retryIfError && !retry ) {
+          await sleep(1000)
+          return await call(path, args, true)
+        }
     }
     return response.ok
   } else {
@@ -104,8 +182,6 @@ documentListPromises = {}
 assignmentsByDocument = {}
 assignmentPromises = {}
 
-promises = {}
-
 log = (what, message) => {
     if (message)
         console.log(message)
@@ -113,13 +189,35 @@ log = (what, message) => {
     return what
 }
 
-getThing = (type, id, functionIfNone) =>
-    log(( promises[type] || log( promises[type] = {}, `Creating promises for ${type}` ))[id],  `${type} promise for id=${id}`)
-        || log ( promises[type][id] = functionIfNone(), `Creating ${type} promise for id=${id}` )
+getPromise = (type, id, functionIfNone, out = {}) =>
+    ( ( promises[type] || (promises[type] = {}) )[id] )
+        || ( out.new = true, promises[type][id] = functionIfNone() )
+
+// clearPromise = (type, id) => delete promises[type][id]
+
+lock = async (type, id, callback) => {
+  let path = `['${type}']['${id}']`
+  let lock
+  while ( lock = _.get(locks, path)) {
+    await lock
+  }
+
+  let callbackPromise = callback()
+  _.set(locks, path,
+    callbackPromise
+    .then(() => 
+      delete locks[type][id]
+    )
+  )
+
+  return await callbackPromise
+}
 
 loadItems = async () => {
 
     items = []
+    promises = {}
+    locks = {}
 
     languagesById = {}
 
@@ -148,7 +246,19 @@ loadItems = async () => {
         targetLanguageIds: globalTargetLanguageIds, statuses: projectStatuses, "creationDateFrom":null,"creationDateTo":null
     })
 
-    let { projects } = await get('ssr-projects/page?tab=0')
+    let { hasMoreProjects, projects } = await get('ssr-projects/page?tab=0')
+
+    if ( hasMoreProjects ) {
+      let {
+        id: lastProjectId,
+        modificationDate: lastProjectModificationDate
+      } = _.last(projects)
+
+      let { projects: moreProjects } = await get('ssr-projects/page?tab=0', {
+        lastProjectId, lastProjectModificationDate
+      })
+      projects = [...projects, ...moreProjects]
+    }
 
     let item = {
         serverUrl
@@ -225,7 +335,7 @@ loadItems = async () => {
                                 calculatedDeadline: new Date(stage.deadline || project.deadline),
                             }
 
-                            let documentListId = loadDocumentLists && await getThing('documentList', documentId, 
+                            let documentListId = loadDocumentLists && await getPromise('documentList', documentId, 
                                 () => log(
                                     post('api/WorkflowAssignments/CreateDocumentListId', [documentId]), 
                                     `Fetching document list for document ${document.id}`
@@ -235,7 +345,7 @@ loadItems = async () => {
                             if ( path.includes('assignee') ) {
 
                                 _.find(
-                                        (await getThing('assignments', documentId,
+                                        (await getPromise('assignments', documentId,
                                             async () => log(get(`api/WorkflowAssignments/${project.id}/GetWorkflowStages`, {
                                                 documentListId
                                             }), `Fetching assignments for document ${document.id}`)
@@ -258,7 +368,7 @@ loadItems = async () => {
                         
                         ;(async (item) => {
 
-                            let filterSetId = (await getThing(
+                            let filterSetId = (await getPromise(
                                 'filterSets',
                                 documentId,
                                 () => post(
@@ -269,23 +379,38 @@ loadItems = async () => {
                                     ]
                                 )
                             )).id
+                            
 
-                            let segments = (await getThing(
+                            let start = 0, limit = 1000, segments = []
+                            
+                            while (true) {
+                              let segmentInfo = await getPromise(
                                 'segments',
-                                documentId,
+                                `${documentId}_${languageId}_${start}`,
                                 () => get(
-                                    `api/Segments?start=0&limit=1000&mode=manager`,
+                                    `api/Segments?start=${start}&limit=${limit}&mode=manager`,
                                     {
                                         documentId,
-                                        filterSetId
+                                        filterSetId,
+                                        languageId
                                     }
                                 )
-                            )).items
+                              )
+                              
+                              console.log(segmentInfo.items.length, segmentInfo.total)
+
+                              segments.push(...segmentInfo.items)
+
+                              if ( segments.length >= segmentInfo.total ) break
+
+                              start += limit
+                            }
                             
                             for (let segment of segments) {
                                 ;(async (item) => {
-                                    let { number, id, commentState, topicId, wordsCount } = segment
-                                    let { tags, text } = segment.source
+                                    let { number, id, commentState, topicId, wordsCount, source } = segment
+                                    if (!source) debugger
+                                    let { tags, text } = source
 
                                     let segmentTarget = segment.targets.find(target => target.languageId == languageId)
                                     let { isConfirmed } = segmentTarget
@@ -308,7 +433,7 @@ loadItems = async () => {
                                                 documentId,
                                                 segmentId: segment.id,
                                                 languageId: language.id
-                                            }
+                                            }, { item }
                                         )
                                         
                                         if ( matches )
@@ -343,8 +468,9 @@ loadItems = async () => {
 
 scroid.sendMessage = async (userId, message) => {
 
+    // console.log(userId, message)
     post(`api/chat/conversations/${(
-        await getThing(
+        await getPromise(
             'conversations', 
             userId, 
             () => get(`api/chat/contacts/${userId}/conversation`, {accountId})
@@ -363,11 +489,12 @@ scroid.confirm = ( item, text = item.segment.translation ) =>
     }&mode=manager&ignoreWarnings=true`,
     { 
       text, tags:[]
-    }
+    }, { item }
   )
 
 scroid.editSegment = async ( item, text, { confirm } ) => {
   let { segment, target, document } = item
+
   let editResult = await put(
     `api/Segments/${
       segment.id
@@ -378,7 +505,7 @@ scroid.editSegment = async ( item, text, { confirm } ) => {
     }&saveType=0&mode=manager&stageNumber=0`,
     {
       text, tags:[]
-    }
+    }, { item }
   )
   if ( confirm )
     return {
@@ -387,30 +514,39 @@ scroid.editSegment = async ( item, text, { confirm } ) => {
     }
   else
     return { editResult }
+
 }
 
 scroid.doAction = {
+
+    confirm: scroid.confirm,
 
     nudge: async item => {
 
         let { assignee } = item
         let { id } = assignee
 
-        // scroid.nudged = scroid.nudged || []
-        item.nudged = false
+        if (id == 'fa428cfb-50a9-4205-b2bb-f79620f8e78d')
+          return
 
-        let message = getThing( 'message', id, () => (
-          {body: 
-            `Hello, fya, jobs that are either overdue or due in less than ${settings.hoursBeforeDeadlineLessThan} hours:`}) 
-        )
+        let firstMessage = `Hello, fya, jobs that are either overdue or due in less than ${settings.hoursBeforeDeadlineLessThan} hours:`
+        // let message = getPromise( 'message', id, () => (
+        //   {body: firstMessage}) 
+        // )
+
+        await getPromise('firstMessage', id, async () => scroid.sendMessage(id, firstMessage) )
+
+        // if (!nudged) {}
         
         let { calculatedDeadline } = item.stage
 
         let overdue = calculatedDeadline < new Date()
         
-        message.body += 
-          '\n' 
-          + `${
+        // message.body += 
+        //   '\n' 
+        //   + 
+        let message = 
+          `${
             overdue ? 'OVERDUE! ' : ''
           }${
             item.stage.wordsLeft
@@ -420,12 +556,26 @@ scroid.doAction = {
             item.target.url
           }`
         
-        item.nudged = true
+        
+        scroid.sendMessage(id, message)
 
-        if ( !_.filter( items, {assignee: {id}, nudged: false} ).length ) {
-          debugger
-          scroid.sendMessage(id, message.body)
-        }
+        // item.nudged = true
+
+        // let remain = _.reject(
+        //   _.filter( 
+        //     items, {
+        //       assignee: {id}
+        //     }
+        //   ), {
+        //     nudged:true
+        //   }).length
+
+        // debugger
+
+        // if ( !remain ) {
+        //   if (shouldIGo)
+            // scroid.sendMessage(id, message.body)
+        // }
 
     },
 
@@ -434,7 +584,7 @@ scroid.doAction = {
       let { segment, target, document} = item
       let { text } = segment.matches[0]
 
-      await scroid.editSegment(item, text, { confirm: true })
+      await scroid.editSegment(item, text, { confirm: settings.confirm })
 
     },
 
@@ -448,39 +598,49 @@ scroid.doAction = {
 }
 
 scroid.batchOperation = ( item, operation ) =>
-  post(`api/SegmentTargets/BatchOperation/${
-    operation
-  }?documentId=${
-    item.document.id
-  }&languageIds[]=${
-    item.target.language.id
-  }&mode=manager`)
+  post(`api/SegmentTargets/BatchOperation/${operation}`, {
+    documentId: item.document.id,
+    languageId: parseInt(item.target.language.id),
+    mode: 'manager'
+  })
 
 scroid.go = async () => {
 
     for (let uid of uids) {
         let item = items.find(item=>item.uid==uid)
-        item.pending = true
-
-        new Promise(async function() {
-            
-            try {
-                if ( scroid.doAction[action] )
-                    await scroid.doAction[action](item)
-                else {
-                    await prepare(item)
-                    let path = eval('`/'+pathPattern.replace(/{(.+?)}/g, "${item.$1}")+'`')
-                    let body = bodyPattern ? eval(`(${bodyPattern})`) : null
-                    await call(path, {method, item, body, final: true})    
-                }
-                item.succeeded = true
-            } catch(error) {
-                item.succeeded = false
-            } finally {
-                item.processed = true
-                item.pending = false
-            }
-        })
+        scroid.goForItem(item)
     }
 
+}
+
+scroid.goForItem = async item => {
+  item.pending = true
+
+  try {
+    if (scroid.doAction[action])
+      await scroid.doAction[action](item)
+    else {
+      await prepare(item)
+      let path = eval('`/' + pathPattern.replace(/{(.+?)}/g, "${item.$1}") + '`')
+      let body = bodyPattern ? eval(`(${bodyPattern})`) : null
+      await call(path, { method, item, body, final: true })
+    }
+    item.succeeded = true
+  } catch (error) {
+    item.succeeded = false
+    item.failed = true
+  } finally {
+    item.processed = true
+    item.pending = false
+  }
+}
+
+// generic
+
+require = async url => {
+  eval(
+    await (
+      await fetch(url)
+    ).text()
+  )
 }
