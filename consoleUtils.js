@@ -1,4 +1,4 @@
-const require = async url => {
+require = async url => {
   eval(
     await (
       await fetch(url)
@@ -10,7 +10,35 @@ await require('https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js')
 await require('https://cdnjs.cloudflare.com/ajax/libs/axios/0.25.0/axios.min.js')
 
 
-;({ forEach, map, range, without } = _)
+;({ filter, forEach, identity, map, range, without } = _)
+
+
+// Functionals
+
+log = what => ( console.log(what), what )
+
+promises = []
+
+getPromise = (type, id, callback ) =>
+    ( ( promises[type] || (promises[type] = {}) )[id] )
+        || ( promises[type][id] = callback() )
+
+sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+retry = async ( callback, retries = 10, ms = 3000 ) => {
+  try {
+    console.log({ retries })
+    return await callback()
+  } catch(error) {
+    if ( retries ) {
+      await sleep(ms)
+      return retry( callback, retries - 1, ms)
+    }
+  }
+}
+
+//
+
 
 days = without(range(1,32), 4, 5, 11, 12, 18, 19, 25, 26)
 dates = map(days, day => new Date(2021, 11, day, 23, 59, 59).toISOString())
@@ -129,6 +157,8 @@ allProjects = async () => {
   return allProjects
 }
 
+completeProject = ({ id }) => axios.post(`api/Projects/${id}/ChangeStatus/3`)
+
 expandProjects = async projects => 
   await Promise.all(projects.map(project => 
     axios.get(`api/Projects/${project.id}/Full`).then(
@@ -141,6 +171,125 @@ expandProjects = async projects =>
 projectDocuments = async ({ id }) => (await axios.get(`api/Projects/${id}/AllDocuments`)).data
 
 allDocuments = async () => ( await Promise.all((await allProjects()).map(projectDocuments)) ).flat()
+
+allTargets = async () => map( await allDocuments(), 'targets' ).flat()
+
+allIncompleteTargets = async () => ( await allTargets ).filter(t=>t.workflowStages[0].progress < 100)
+
+segmentFilters = {
+
+  unconfirmed: {
+    name: 'confirmation',
+    isConfirmed: false,
+    workflowStageNumber: 1
+  }
+
+}
+
+postFilters = {
+
+  empty: { target: { text: '' }},
+  unconfirmed: { target: { isConfirmed: false } }
+
+}
+
+getFilterSetId = ( { id, targets }, segmentFilter ) =>
+  axios.post(
+    `api/Documents/${id}/SegmentsFilter?mode=manager`,
+    [
+      ...segmentFilter,
+      { name: 'language', targetLanguageIds: map(targets, 'languageId') }
+    ]
+  ).then( r => r.data.id)
+
+documentSegments = async ( { id: documentId, projectId, targets }, { filterKeys, keepPromises } = {} ) =>
+  (
+    !keepPromises && ( promises.filterSets = {} ),
+    ( await Promise.all(targets.map(async ({ languageId }) =>
+      ( await axios.get('api/Segments', { params: {
+        languageId,
+        documentId,
+        start: 0,
+        limit: 1000,
+        mode: 'manager',
+        filterSetId: filterKeys && await getPromise('filterSets', documentId,
+          () => getFilterSetId( { id: documentId, targets }, filterKeys.map(key => segmentFilters[key]).filter(identity) )
+        )
+      }}) ).data.items.map( item => ({ ...item, documentId, projectId, target: item.targets[0] }) )
+    )) ).flat()
+  )
+
+allSegments = async ( filterKeys = [] ) => {
+  let documents = await allDocuments()
+  if ( filterKeys.includes('unconfirmed') )
+    documents = filter(documents, d => d.targets[0]?.workflowStages[0]?.progress < 100)
+
+  let segments = ( await Promise.all(
+    documents.map(document => {
+      try {
+        return documentSegments(document, { filterKeys, keepPromises: true })
+      } catch(error) {
+        return []
+      }
+    })
+  ) ).flat()
+
+  for ( let key of filterKeys ) {
+    let postFilter = postFilters[key]
+    if ( postFilter )
+      segments = filter(segments, log(postFilter))
+  }
+  return segments
+}
+
+allSegmentsWithMatches = async () => {
+
+  let segments = await allSegments(['unconfirmed', 'empty'])
+  await Promise.all(segments.map(async segment => {
+    try {
+      let { id: segmentId, targets: [{ documentId, languageId }] } = segment
+      segment.matches = ( await retry(() => 
+        axios.get('api/SegmentTargets/TMTranslations', { params: {
+          languageId, segmentId, documentId, mode: 'manager'
+        }})
+      )).data
+    } catch(error) {
+      log({error})
+      segment.matches = null
+    }
+  }))
+  segments = segments.filter(s=>s.matches?.[0]?.matchPercentage>=100)
+  return segments
+
+}
+
+putSegment = ( { id, targets: [{ languageId, documentId }] }, text, action = '' ) =>
+  axios.put(`api/Segments/${id}/SegmentTargets/${languageId}/${action}?documentId=${documentId}&mode=manager&ignoreWarnings=true`,
+  { 
+    text, tags: []
+  }
+)
+
+confirmSegment = ( segment, text = segment.targets[0].text ) =>
+  putSegment(segment, text, 'Confirm')
+
+editSegment = putSegment
+
+pretraslateSegment = async segment => {
+  let match = segment.matches?.find(m=>m.matchPercentage>=100)
+  if ( match ) {
+    await editSegment(segment, match.targetText)
+    await confirmSegment(segment, match.targetText)
+  }
+}
+
+completeTarget = ({ documentId, languageId }) => 
+  axios.post(`api/Documents/${documentId}/Targets/${languageId}/Complete`)
+
+completeFinishedTargets = async () =>
+  ( await allTargets() )
+  .filter(t => t.workflowStages[0].progress == 100 && t.status != 3)
+  .forEach(completeTarget)
 
 projectsByCompletedWordCount = projects => 
   _(projects)
