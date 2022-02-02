@@ -25,9 +25,9 @@ getPromise = (type, id, callback ) =>
 
 sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-retry = async ( callback, retries = 10, ms = 3000 ) => {
+retry = async ( callback, retries = 3, ms = 3000 ) => {
   try {
-    console.log({ retries })
+    console.log({ callback, retries })
     return await callback()
   } catch(error) {
     if ( retries ) {
@@ -100,7 +100,7 @@ addJob = ({
   headers: {'content-type': 'application/json'}
 })
 
-batchConfirm = ( documentId, languageId ) => axios.post('api/SegmentTargets/BatchOperation/Confirm', {
+batchConfirm = ({ documentId, languageId }) => axios.post('api/SegmentTargets/BatchOperation/Confirm', {
   mode: 'manager',
   documentId,
   filterSetId: null,
@@ -142,6 +142,7 @@ createInvoice = jobs => fetch("https://us.smartcat.com/api/invoices", {
 })
 
 allProjects = async () => {
+  delete promises.filterSets
   let allProjects = []
   let lastProjectId, lastProjectModificationDate
   while ( true ) {
@@ -173,6 +174,11 @@ projectDocuments = async ({ id }) => (await axios.get(`api/Projects/${id}/AllDoc
 allDocuments = async () => ( await Promise.all((await allProjects()).map(projectDocuments)) ).flat()
 
 allTargets = async () => map( await allDocuments(), 'targets' ).flat()
+
+copySourceToTarget = ({ documentId, languageId }) =>
+      axios.post(`https://us.smartcat.com/api/SegmentTargets/BatchOperation/CopySourceToTarget`, {
+        documentId, languageId, filterSetId: null, stageNumber: null, mode: 'manager'
+      })
 
 allIncompleteTargets = async () => ( await allTargets ).filter(t=>t.workflowStages[0].progress < 100)
 
@@ -219,33 +225,40 @@ documentSegments = async ( { id: documentId, projectId, targets }, { filterKeys,
     )) ).flat()
   )
 
-allSegments = async ( filterKeys = [] ) => {
+allSegments = async ( filterKeys = [], callback = identity ) => {
   let documents = await allDocuments()
   if ( filterKeys.includes('unconfirmed') )
     documents = filter(documents, d => d.targets[0]?.workflowStages[0]?.progress < 100)
 
   let segments = ( await Promise.all(
-    documents.map(document => {
+    documents.map(async document => {
       try {
-        return documentSegments(document, { filterKeys, keepPromises: true })
+        let segments = await Promise.all(
+          await documentSegments(document, { filterKeys, keepPromises: true }).then(
+            segments => segments.map(callback)
+          )
+        )
+
+        for ( let key of filterKeys ) {
+          let postFilter = postFilters[key]
+          if ( postFilter )
+            segments = filter(segments, log(postFilter))
+        }
+        return segments
+      
       } catch(error) {
         return []
       }
     })
   ) ).flat()
 
-  for ( let key of filterKeys ) {
-    let postFilter = postFilters[key]
-    if ( postFilter )
-      segments = filter(segments, log(postFilter))
-  }
   return segments
 }
 
-allSegmentsWithMatches = async () => {
+allSegmentsWithMatches = async ( filterKeys = ['unconfirmed', 'empty'], callback = identity ) => {
 
-  let segments = await allSegments(['unconfirmed', 'empty'])
-  await Promise.all(segments.map(async segment => {
+  
+  let segments = await allSegments(filterKeys, async segment => {
     try {
       let { id: segmentId, targets: [{ documentId, languageId }] } = segment
       segment.matches = ( await retry(() => 
@@ -257,17 +270,18 @@ allSegmentsWithMatches = async () => {
       log({error})
       segment.matches = null
     }
-  }))
+    return await callback(segment)
+  })
   segments = segments.filter(s=>s.matches?.[0]?.matchPercentage>=100)
   return segments
 
 }
 
 putSegment = ( { id, targets: [{ languageId, documentId }] }, text, action = '' ) =>
-  axios.put(`api/Segments/${id}/SegmentTargets/${languageId}/${action}?documentId=${documentId}&mode=manager&ignoreWarnings=true`,
+  retry(() => axios.put(`api/Segments/${id}/SegmentTargets/${languageId}/${action}?documentId=${documentId}&mode=manager&ignoreWarnings=true`,
   { 
     text, tags: []
-  }
+  })
 )
 
 confirmSegment = ( segment, text = segment.targets[0].text ) =>
