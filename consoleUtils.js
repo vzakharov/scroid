@@ -25,15 +25,49 @@ getPromise = (type, id, callback ) =>
 
 sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-retry = async ( callback, retries = 3, ms = 3000 ) => {
+maxRequests = 200
+numRequests = 0
+totalRequests = 0
+requestsUnblocked = Promise.resolve()
+maxRetries = 2
+
+retry = async ( callback, retries = maxRetries, ms = 3000 ) => {
+  let unblockRequests = () => {}
+  let mustBlock = () => numRequests >= maxRequests
+
+  let releaseRequest = () => {
+    numRequests--
+    if ( !mustBlock() )
+      unblockRequests()
+  }
+
   try {
-    console.log({ callback, retries })
-    return await callback()
+    while ( mustBlock() )
+      await requestsUnblocked
+
+    numRequests++
+    totalRequests++
+
+    if ( mustBlock() )
+      requestsUnblocked = new Promise(resolve => unblockRequests = resolve)
+    
+    console.log({ numRequests, totalRequests, callback, retries })
+
+    let result = await callback()
+    releaseRequest()
+    return result
+
   } catch(error) {
-    if ( retries ) {
+
+    let { status, data: { error: scError } = {} } = error.response || {}
+
+    console.log({ callback, error, scError })
+    if ( retries && status != 500 && scError != 'QACriticalError' ) {
+      releaseRequest()
       await sleep(ms)
       return retry( callback, retries - 1, ms)
     }
+
   }
 }
 
@@ -175,7 +209,7 @@ allDocuments = async () => ( await Promise.all((await allProjects()).map(project
 
 allTargets = async () => map( await allDocuments(), 'targets' ).flat()
 
-copySourceToTarget = ({ documentId, languageId }) =>
+batchCopySourceToTarget = ({ documentId, languageId }) =>
       axios.post(`https://us.smartcat.com/api/SegmentTargets/BatchOperation/CopySourceToTarget`, {
         documentId, languageId, filterSetId: null, stageNumber: null, mode: 'manager'
       })
@@ -233,17 +267,18 @@ allSegments = async ( filterKeys = [], callback = identity ) => {
   let segments = ( await Promise.all(
     documents.map(async document => {
       try {
-        let segments = await Promise.all(
-          await documentSegments(document, { filterKeys, keepPromises: true }).then(
-            segments => segments.map(callback)
-          )
-        )
+        let segments = await documentSegments(document, { filterKeys, keepPromises: true })
 
         for ( let key of filterKeys ) {
           let postFilter = postFilters[key]
           if ( postFilter )
             segments = filter(segments, log(postFilter))
         }
+      
+        segments = await Promise.all(
+          segments.map(callback)
+        )
+
         return segments
       
       } catch(error) {
@@ -261,11 +296,11 @@ allSegmentsWithMatches = async ( filterKeys = ['unconfirmed', 'empty'], callback
   let segments = await allSegments(filterKeys, async segment => {
     try {
       let { id: segmentId, targets: [{ documentId, languageId }] } = segment
-      segment.matches = ( await retry(() => 
+      segment.matches = ( await retry( () => 
         axios.get('api/SegmentTargets/TMTranslations', { params: {
           languageId, segmentId, documentId, mode: 'manager'
         }})
-      )).data
+      ) ).data
     } catch(error) {
       log({error})
       segment.matches = null
@@ -278,22 +313,32 @@ allSegmentsWithMatches = async ( filterKeys = ['unconfirmed', 'empty'], callback
 }
 
 putSegment = ( { id, targets: [{ languageId, documentId }] }, text, action = '' ) =>
-  retry(() => axios.put(`api/Segments/${id}/SegmentTargets/${languageId}/${action}?documentId=${documentId}&mode=manager&ignoreWarnings=true`,
-  { 
-    text, tags: []
-  })
+  text &&
+  retry(() =>
+    axios.put(`api/Segments/${id}/SegmentTargets/${languageId}/${action}?documentId=${documentId}&mode=manager&ignoreWarnings=true`,
+    { 
+      text, tags: []
+    }
+  )
 )
 
-confirmSegment = ( segment, text = segment.targets[0].text ) =>
-  putSegment(segment, text, 'Confirm')
+confirmSegment = segment =>
+  putSegment(segment, segment.targets[0].text, 'Confirm')
 
-editSegment = putSegment
+editSegment = async ( segment, text ) => {
+  await putSegment( segment, text )
+  Object.assign(segment.targets[0], { text })
+}
 
-pretraslateSegment = async segment => {
+copySourceToTarget = segment => 
+  segment.targets[0].text != segment.source.text &&
+  editSegment(segment, segment.source.text)
+
+pretranslateSegment = async segment => {
   let match = segment.matches?.find(m=>m.matchPercentage>=100)
   if ( match ) {
     await editSegment(segment, match.targetText)
-    await confirmSegment(segment, match.targetText)
+    await confirmSegment(segment)
   }
 }
 
