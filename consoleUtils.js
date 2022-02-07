@@ -492,7 +492,7 @@ getTemplateLanguages = async templateName =>
   ))
 
 
-assignSupplier = ({ targetLanguageId, document: { creationDate, documentListId, projectId } }, supplierId, { hours = 72 }) =>
+assignSupplier = ({ targetLanguageId, document: { creationDate, documentListId, projectId } }, supplierId, { hours = 72, countFromNow }) =>
   retry(
     () => axios.post(`api/WorkflowAssignments/${projectId}/SaveAssignments?documentListId=${documentListId}&stageSelector=1`, {
       targetLanguageId,
@@ -502,7 +502,7 @@ assignSupplier = ({ targetLanguageId, document: { creationDate, documentListId, 
       removedAssignedUserIds: [],
       removedInvitedUserIds: [],
       saveDeadline: true,
-      deadline: addWorkingHours(creationDate, hours).toISOString()
+      deadline: addWorkingHours(countFromNow ? new Date() : creationDate, hours).toISOString()
     }
   ), 0
 )
@@ -519,7 +519,7 @@ getAssignmentTemplate = async ( name = 'default' ) => {
 }
   
 
-assignFromTemplate = async ( assignment, templateName = 'default', { hours = 72 } = {} ) => {
+assignFromTemplate = async ( assignment, templateName = 'default', { hours = 72, countFromNow } = {} ) => {
   let { targetLanguageId, name: stageName } = assignment
   let { targetingRules } = await getAssignmentTemplate(templateName)
   let targetingRule = find(targetingRules, { stageName })
@@ -527,7 +527,7 @@ assignFromTemplate = async ( assignment, templateName = 'default', { hours = 72 
     let { suppliers } = targetingRule
     let supplier = find(suppliers, { targetLanguageId })
     if ( supplier ) {
-      return assignSupplier(assignment, supplier.id, hours)
+      return assignSupplier(assignment, supplier.id, hours, countFromNow)
     }
   }
 }
