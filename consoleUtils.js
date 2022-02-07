@@ -95,6 +95,10 @@ retry = async ( callback, retries = maxRetries, ms = 3000 ) => {
 
 //
 
+getUserContext = () => getPromise('userContext', 0, () =>
+  data(axios.get('api/userContext'))
+)
+
 getExchangeRates = () => data(axios.get('api/freelancers/exchange-rates'))
 
 days = without(range(1,32), 4, 5, 11, 12, 18, 19, 25, 26)
@@ -418,21 +422,63 @@ allAssignments = async ( callback = identity, predicate = identity ) => {
   )
 }
 
+let assignmentComplete = ({ name, targetLanguageId, document: { targets }}) =>
+  !find(targets, ({ languageId, workflowStages }) =>
+    languageId == targetLanguageId
+    && find(workflowStages, { name })?.progress < 100
+  )
+
 getUnassigned = ( callback, predicate = identity ) =>
   allAssignments(callback, assignment => {
-    let { freelancerInvitations, name, targetLanguageId, document: { targets }} = assignment
-    let matchesDefaultFilter = 
-      !freelancerInvitations.length
-      && find(targets, ({ languageId, workflowStages }) =>
-        languageId == targetLanguageId
-        && find(workflowStages, { name })?.progress < 100
-      )
-    if ( matchesDefaultFilter ) {
+    if ( !assignment.freelancerInvitations.length && !assignmentComplete(assignment) ) {
       let matchesOwnFilter = predicate(assignment)
       return matchesOwnFilter  
     } else
       return false
   })
+
+getIncompleteAssignments = async () =>
+  filter(
+    await allAssignments(),
+    assignment => assignment.freelancerInvitations.length && !assignmentComplete(assignment)
+  )
+
+getOverdueAssignments = async ( hours = 0, callback = identity ) =>
+  Promise.all( map(
+    filter(
+      await getIncompleteAssignments(), 
+      ({ documents: [{ deadline }]}) => 
+        deadline && ( new Date(deadline) - new Date() < hours*3600*1000 )
+    )
+  , assignment => callback( assignment, hours )) )
+
+sendMessage = async (userId, message) => {
+  axios.post(`api/chat/conversations/${(
+    ( await getPromise(
+      'conversation', 
+      userId, 
+      async () => data(axios.get(`api/chat/contacts/${userId}/conversation`, {params: { 
+        accountId: ( await getUserContext() ).accountContext.accountId
+      }}))
+    ) ).id
+  )}/messages`, message, {
+    headers: {
+      'Content-Type': 'application/json'
+    }
+  })
+}
+
+jobLink = ({ documents: [{ id }], targetLanguageId }) => 
+  `https://us.smartcat.com/editor?documentId=${id}&languageId=${targetLanguageId}`
+
+sendOverdueMessage = ({ freelancerInvitations: [{ id }], ...job}, hours) =>
+  sendMessage(id, 
+    `${
+      hours 
+        ? `Job due in < ${hours} hours`
+        : 'JOB OVERDUE' 
+    }: ${ jobLink(job) }`
+  )
 
 getUnassignedForTemplate = async ( callback = identity, templateName ) => {
   let templateLanguages = await getTemplateLanguages(templateName)
@@ -444,6 +490,7 @@ getTemplateLanguages = async templateName =>
     (await getAssignmentTemplate(templateName)).targetingRules[0].suppliers,
     'targetLanguageId'
   ))
+
 
 assignSupplier = ({ targetLanguageId, document: { creationDate, documentListId, projectId } }, supplierId, { hours = 72 }) =>
   retry(
