@@ -47,11 +47,11 @@ getPromise = (type, id, callback ) =>
 
 sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-maxRequests = 200
+maxRequests = 50
 numRequests = 0
 totalRequests = 0
 requestsUnblocked = Promise.resolve()
-maxRetries = 2
+maxRetries = 5
 
 retry = async ( callback, retries = maxRetries, ms = 3000 ) => {
   let unblockRequests = () => {}
@@ -408,11 +408,22 @@ getDocumentAssignments = async document =>
     await data(axios.get(`api/WorkflowAssignments/${document.projectId}/GetWorkflowStages?documentListId=${
       await getDocumentListId(document)
     }`))
-  ).map( assignment => ({
-    ...assignment, document
-  }))
+  ).map( assignment => {
+    let { name, targetLanguageId: languageId } = assignment
+    let { targets, wordsCount } = document
+    let workflowStage = find(
+      find(
+        targets, { languageId }
+      ).workflowStages, { name }
+    )
+    return {
+      ...assignment, document,
+      workflowStage,
+      wordsLeft: wordsCount - workflowStage.wordsTranslated
+    }
+  })
 
-allAssignments = async ( callback = identity, predicate = identity ) => {
+allAssignments = async ( predicate = identity, callback = identity ) => {
   let assignments = await allDocuments(getDocumentAssignments)
   assignments = assignments.flat()
   assignments = assignments.filter(predicate)
@@ -429,13 +440,19 @@ let assignmentComplete = ({ name, targetLanguageId, document: { targets }}) =>
   )
 
 getUnassigned = ( callback, predicate = identity ) =>
-  allAssignments(callback, assignment => {
+  allAssignments(assignment => {
     if ( !assignment.freelancerInvitations.length && !assignmentComplete(assignment) ) {
       let matchesOwnFilter = predicate(assignment)
       return matchesOwnFilter  
     } else
       return false
-  })
+  }, callback)
+
+getUnconfirmedAssignments = callback =>
+  allAssignments(
+    ({ freelancerInvitations, executives }) => freelancerInvitations.length && !executives.length,
+    callback
+  )
 
 getIncompleteAssignments = async () =>
   filter(
@@ -443,7 +460,7 @@ getIncompleteAssignments = async () =>
     assignment => assignment.freelancerInvitations.length && !assignmentComplete(assignment)
   )
 
-getOverdueAssignments = async ( hours = 0, callback = identity ) =>
+assignmentsDueIn = async ( hours = 0, callback = identity ) =>
   Promise.all( map(
     filter(
       await getIncompleteAssignments(), 
@@ -451,6 +468,9 @@ getOverdueAssignments = async ( hours = 0, callback = identity ) =>
         deadline && ( new Date(deadline) - new Date() < hours*3600*1000 )
     )
   , assignment => callback( assignment, hours )) )
+
+logOverdueAssignment = ({ wordsLeft, freelancerInvitations: [{ name: supplierName }], document: { name: documentName }}) =>
+  console.log({supplierName, documentName, wordsLeft })
 
 sendMessage = async (userId, message) => {
   axios.post(`api/chat/conversations/${(
@@ -471,14 +491,18 @@ sendMessage = async (userId, message) => {
 jobLink = ({ documents: [{ id }], targetLanguageId }) => 
   `https://us.smartcat.com/editor?documentId=${id}&languageId=${targetLanguageId}`
 
-sendOverdueMessage = ({ freelancerInvitations: [{ id }], ...job}, hours) =>
-  sendMessage(id, 
+nudge = job => {
+  let { documents: [{ deadline }], wordsLeft, freelancerInvitations: [{ id }]} = job
+  deadline = new Date(deadline)
+  let hours = Math.ceil( ( deadline - new Date() ) / 3600/1000 )
+  return sendMessage(id, 
     `${
-      hours 
-        ? `Job due in < ${hours} hours`
-        : 'JOB OVERDUE' 
+      hours > 0
+        ? `${wordsLeft} words due in < ${hours} hours`
+        : `${wordsLeft} WORDS OVERDUE BY > ${-hours} HOURS`
     }: ${ jobLink(job) }`
   )
+}
 
 getUnassignedForTemplate = async ( callback = identity, templateName ) => {
   let templateLanguages = await getTemplateLanguages(templateName)
