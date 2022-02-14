@@ -469,8 +469,10 @@ assignmentsDueIn = async ( hours = 0, callback = identity ) =>
     )
   , assignment => callback( assignment, hours )) )
 
-logOverdueAssignment = ({ wordsLeft, freelancerInvitations: [{ name: supplierName }], document: { name: documentName }}) =>
-  console.log({supplierName, documentName, wordsLeft })
+logOverdueAssignment = ({ 
+  wordsLeft, freelancerInvitations: [{ name: supplierName }], document: { name: documentName }, documents: [{ deadline }]
+}) =>
+  console.log(supplierName, deadline, wordsLeft, documentName)
 
 sendMessage = async (userId, message) => {
   axios.post(`api/chat/conversations/${(
