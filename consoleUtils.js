@@ -530,7 +530,7 @@ assignSupplier = ({ targetLanguageId, document: { creationDate, documentListId, 
       saveDeadline: true,
       deadline: addWorkingHours(countFromNow ? new Date() : creationDate, hours).toISOString()
     }
-  ), 0
+  ), 3
 )
 
 allAssignmentTemplates = () => getPromise('assignmentTemplates', 0, () => data(
