@@ -209,7 +209,7 @@ addProRata = ({ wordsTranslated: unitCount, date }, id) =>
   })
 
 
-allJobs = (paymentStateFilter = 0, skip = 0, limit = 1000, doNotContinue) =>
+allJobs = ({paymentStateFilter = 0, skip = 0, limit = 100, doNotContinue} = {}) =>
   data(axios.get('api/jobs/for-customer', { params: {
     skip, limit, paymentStateFilter
   }})).then(async jobs => (
@@ -222,7 +222,7 @@ allJobs = (paymentStateFilter = 0, skip = 0, limit = 1000, doNotContinue) =>
     jobs.length < limit || doNotContinue
       ? jobs
       : [ ...jobs, 
-        ...await allJobs(paymentStateFilter, skip + limit, limit)
+        ...await allJobs({ paymentStateFilter, skip: skip + limit, limit })
       ]
   ))
 
@@ -247,9 +247,9 @@ groupJobsByProject = async ( jobs, wordsPerMinute = 70 ) => (
 
 addAllProRata = jobs => forEach(groupJobs(jobs), addProRata)
 
-addProRataAsMinutes = ( jobs, executiveUserId, pricePerUnit, currency ) =>
+addProRataAsMinutes = ( groupedJobs, executiveUserId, pricePerUnit, currency ) =>
  Promise.all( 
-    jobs.map( ({ date, minutes, projectId }) =>
+    groupedJobs.map( ({ date, minutes, projectId }) =>
       minutes && addMinutely({
         executiveUserId,
         date, minutes, pricePerUnit, currency,
@@ -258,7 +258,8 @@ addProRataAsMinutes = ( jobs, executiveUserId, pricePerUnit, currency ) =>
     )
   )
 
-// await addProRataAsMinutes(await groupJobsByProject(), '97d58fd3-2065-4000-81c9-bbad9717f991', 260, 3)
+// await addProRataAsMinutes(await groupJobsByProject(), '97d58fd3-2065-4000-81c9-bbad9717f991', 420, 3)
+// await addProRataAsMinutes(groupedJobs, '97d58fd3-2065-4000-81c9-bbad9717f991', 420, 3)
 
 ids = ['97d58fd3-2065-4000-81c9-bbad9717f991', '624ef942-f51d-43fe-982d-3dd1c36f231a', '492d3b0d-ea65-40c6-9c39-ab49f21155f6', '0049c5af-628b-4244-8a23-725be860f0cb', 'cfa6c3cb-d672-4ab2-8cda-7f0b27de8a37', 'c0d8e9fa-84d4-4759-8bb1-735faf0f2a89', '528f58d7-64a6-4e46-9b73-9d1ab16615d5', '38721b9b-2319-4394-b7e1-1742e82a764b', 'fe7be237-ac21-4d8d-8b1a-9276885587a9', '30cc4d4e-25fe-424f-9dd1-75a856950019', 'c5071b14-8845-44c3-b81d-76c35cb96cd6', 'daebb7c8-c179-4c3d-b9e5-b72a74bdeff6', 'ded33a3a-e521-474d-b1bf-78d31a2fc2bb', 'e3c0dc19-5621-4f10-8464-4a615978e410', '4be24505-c078-44c4-b001-5924731ef908', 'd54c6931-1cde-40e8-ba31-f1fbe91c66df', 'cd87fac0-7758-45ae-8ed2-c9af71b35cf1', '16050fab-1224-46f7-9a9a-d503fea21ee8']
 
@@ -470,9 +471,9 @@ assignmentsDueIn = async ( hours = 0, callback = identity ) =>
   , assignment => callback( assignment, hours )) )
 
 logOverdueAssignment = ({ 
-  wordsLeft, freelancerInvitations: [{ name: supplierName }], document: { name: documentName }, documents: [{ deadline }]
+  wordsLeft, targetLanguageId, freelancerInvitations: [{ name: supplierName }], document: { id: documentId, name: documentName }, documents: [{ deadline }]
 }) =>
-  console.log(supplierName, deadline, wordsLeft, documentName)
+  console.log(supplierName, deadline, wordsLeft, documentName, `https://us.smartcat.com/editor?documentId=${documentId}&languageId=${targetLanguageId}`)
 
 sendMessage = async (userId, message) => {
   axios.post(`api/chat/conversations/${(
@@ -553,7 +554,7 @@ assignFromTemplate = async ( assignment, templateName = 'default', { hours = 72,
     let { suppliers } = targetingRule
     let supplier = find(suppliers, { targetLanguageId })
     if ( supplier ) {
-      return assignSupplier(assignment, supplier.id, hours, countFromNow)
+      return assignSupplier(assignment, supplier.id, { hours, countFromNow })
     }
   }
 }
