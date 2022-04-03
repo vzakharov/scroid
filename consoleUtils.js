@@ -194,13 +194,14 @@ addHoursFromTogglCSV = ( csv, executiveUserId, pricePerUnit, currency, jobDescri
   )
 
 // await addHoursFromTogglCSV(csv, '97d58fd3-2065-4000-81c9-bbad9717f991', 260, 3, 'Loc engineering')
+// 979adbb9-8d04-4ab8-bd6a-4228ae69fee5
 
 addProRata = ({ wordsTranslated: unitCount, date }, id) =>
   addJob({
-    executiveUserId: '97d58fd3-2065-4000-81c9-bbad9717f991',
+    executiveUserId: '979adbb9-8d04-4ab8-bd6a-4228ae69fee5',
     unitType: 1,
     unitCount,
-    pricePerUnit: 3.55,
+    pricePerUnit: 3.7,
     currency: 3,
     jobDescription: 'https://us.smartcat.com/projects/'+id,
     dateStarted: date,
@@ -209,8 +210,27 @@ addProRata = ({ wordsTranslated: unitCount, date }, id) =>
   })
 
 
-allJobs = ({paymentStateFilter = 0, skip = 0, limit = 100, doNotContinue} = {}) =>
-  data(axios.get('api/jobs/for-customer', { params: {
+allJobs = async ({ paymentStateFilter = 0, skip = 0, limit = 500, doNotContinue, numJobs } = {}) => {
+  numJobs ||= (
+    await data(
+      axios.post('api/invoices/invoice-cost', null, { 
+        params: {
+          paymentStateFilter
+        }
+        , headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+    )
+  ).jobIds.length
+
+  // change limit if it would overrun the number of jobs
+  limit + skip > numJobs && (
+    limit = numJobs - skip,
+    doNotContinue = true
+  )
+
+  return data(axios.get('api/jobs/for-customer', { params: {
     skip, limit, paymentStateFilter
   }})).then(async jobs => (
     jobs = await Promise.all(jobs.map(async job => ({
@@ -222,44 +242,54 @@ allJobs = ({paymentStateFilter = 0, skip = 0, limit = 100, doNotContinue} = {}) 
     jobs.length < limit || doNotContinue
       ? jobs
       : [ ...jobs, 
-        ...await allJobs({ paymentStateFilter, skip: skip + limit, limit })
+        ...await allJobs({ paymentStateFilter, skip: skip + limit, limit, numJobs })
       ]
   ))
+}
 
 deleteJob = ({ id }) => fetch(`https://us.smartcat.com/api/jobs/${id}/canceled`, {
   "method": "PUT",
 })
 
-groupJobsByProject = async ( jobs, wordsPerMinute = 70 ) => (
-  !jobs && ( jobs = await allJobs() ),
-  _(jobs)
-    .groupBy('projectId')
-    .mapValues(( jobs, projectId ) => {
-      let wordsTranslated = Math.round(_.sumBy(jobs, 'wordsTranslated'))
-      return { 
-        projectId,
-        wordsTranslated,
-        minutes: Math.round(wordsTranslated / wordsPerMinute), 
-        date: _.minBy(jobs, 'dateVerified').dateVerified
-      }
-    }).values().value()
-)
+groupJobsByProject = async ( jobs, wordsPerMinute = 70, fixedMinutes = 360, minuteStep = 5 ) => {
+  let totalWords, groupedJobs = (
+    !jobs && ( jobs = await allJobs() ),
+    totalWords = _.sumBy(jobs, 'wordsTranslated'),
+    _(jobs)
+      .groupBy('projectName')
+      .mapValues(( jobs, projectName ) => {
+        let wordsTranslated = Math.round(_.sumBy(jobs, 'wordsTranslated'))
+        return { 
+          projectName,
+          wordsTranslated,
+          minutes: Math.round(wordsTranslated * ( 1 / wordsPerMinute + 1 / totalWords * fixedMinutes)/minuteStep) * minuteStep,
+          date: _.minBy(jobs, 'dateVerified').dateVerified
+        }
+      }).values().value()
+  )
+
+  return groupedJobs
+}
 
 addAllProRata = jobs => forEach(groupJobs(jobs), addProRata)
 
-addProRataAsMinutes = ( groupedJobs, executiveUserId, pricePerUnit, currency ) =>
- Promise.all( 
-    groupedJobs.map( ({ date, minutes, projectId }) =>
+addProRataAsMinutes = async ( groupedJobs, executiveUserId, pricePerUnit, currency ) => (
+  groupedJobs ||= await groupJobsByProject(),
+  Promise.all( 
+    groupedJobs.map( ({ date, minutes, projectName }) =>
       minutes && addMinutely({
         executiveUserId,
         date, minutes, pricePerUnit, currency,
-        jobDescription: 'https://us.smartcat.com/projects/' + projectId
+        jobDescription: projectName
       })
     )
   )
+)
 
 // await addProRataAsMinutes(await groupJobsByProject(), '97d58fd3-2065-4000-81c9-bbad9717f991', 420, 3)
 // await addProRataAsMinutes(groupedJobs, '97d58fd3-2065-4000-81c9-bbad9717f991', 420, 3)
+// Rub account: 979adbb9-8d04-4ab8-bd6a-4228ae69fee5
+// await addProRataAsMinutes(await groupJobsByProject(), '979adbb9-8d04-4ab8-bd6a-4228ae69fee5', 290, 3)
 
 ids = ['97d58fd3-2065-4000-81c9-bbad9717f991', '624ef942-f51d-43fe-982d-3dd1c36f231a', '492d3b0d-ea65-40c6-9c39-ab49f21155f6', '0049c5af-628b-4244-8a23-725be860f0cb', 'cfa6c3cb-d672-4ab2-8cda-7f0b27de8a37', 'c0d8e9fa-84d4-4759-8bb1-735faf0f2a89', '528f58d7-64a6-4e46-9b73-9d1ab16615d5', '38721b9b-2319-4394-b7e1-1742e82a764b', 'fe7be237-ac21-4d8d-8b1a-9276885587a9', '30cc4d4e-25fe-424f-9dd1-75a856950019', 'c5071b14-8845-44c3-b81d-76c35cb96cd6', 'daebb7c8-c179-4c3d-b9e5-b72a74bdeff6', 'ded33a3a-e521-474d-b1bf-78d31a2fc2bb', 'e3c0dc19-5621-4f10-8464-4a615978e410', '4be24505-c078-44c4-b001-5924731ef908', 'd54c6931-1cde-40e8-ba31-f1fbe91c66df', 'cd87fac0-7758-45ae-8ed2-c9af71b35cf1', '16050fab-1224-46f7-9a9a-d503fea21ee8']
 
@@ -284,6 +314,16 @@ createInvoice = jobs =>
     })),
     jobs.length > 500 && createInvoice(jobs.slice(500))  
   ])
+
+createInvoices = async jobs => (
+  jobs ||= await allJobs(),
+  // sort jobs by date and create an invoice for each batch of 500
+  _(jobs)
+    .sortBy('dateVerified')
+    .chunk(500)
+    .value()
+    .map(createInvoice)
+)
 
 deleteInvoice = ({ id }) => axios.delete('api/invoices/' + id)
 
@@ -502,7 +542,11 @@ nudge = job => {
     `${
       hours > 0
         ? `${wordsLeft} words due in < ${hours} hours`
-        : `${wordsLeft} WORDS OVERDUE BY > ${-hours} HOURS`
+        : `${wordsLeft} WORDS OVERDUE BY > ${
+          hours > -48
+            ? `${-hours} HOURS`
+            : `${Math.ceil(-hours/24)} DAYS`
+        }`
     }: ${ jobLink(job) }`
   )
 }
