@@ -515,6 +515,12 @@ logOverdueAssignment = ({
 }) =>
   console.log(supplierName, deadline, wordsLeft, documentName, `https://us.smartcat.com/editor?documentId=${documentId}&languageId=${targetLanguageId}`)
 
+logUnassignedAssignment = ({
+  // log document name and link to document
+  document: { id: documentId, name: documentName }, targetLanguageId
+}) =>
+  console.log(documentName, `https://us.smartcat.com/editor?documentId=${documentId}&languageId=${targetLanguageId}`)
+
 sendMessage = async (userId, message) => {
   axios.post(`api/chat/conversations/${(
     ( await getPromise(
