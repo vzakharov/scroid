@@ -1,22 +1,47 @@
-require = async url => {
-  eval(
-    await (
-      await fetch(url)
-    ).text()
-  )
+// Module to perform various Smartcat tasks via calls to its undocumented API
+
+let cdns = {
+  axios: 'https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js',
+  _: 'https://cdnjs.cloudflare.com/ajax/libs/axios/0.25.0/axios.min.js',
+  Papa: 'https://unpkg.com/papaparse@latest/papaparse.min.js',
+  axiosRateLimit: 'https://cdn.jsdelivr.net/npm/axios-rate-limit@1.3.0/src/index.min.js',
 }
 
-await Promise.all([
-  require('https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js'),
-  require('https://cdnjs.cloudflare.com/ajax/libs/axios/0.25.0/axios.min.js'),
-  require('https://unpkg.com/papaparse@latest/papaparse.min.js')
-])
+// If it's not browser environment, we're in node.js
+if ( !window ) {
 
+  // Require every module using keys of cdns
+  for ( let key in cdns ) {
+    require(cdns[key])
+  }
 
-;({ filter, find, flatten, forEach, identity, map, mapValues, range, uniq, without } = _)
-;({ assign } = Object)
+} else {
 
-// Helpers
+  module = {}
+
+  let codeToEval = ''
+  
+  for ( let key in cdns ) {
+    let url = cdns[key]
+    codeToEval += `\n\nconsole.log('Evaluating ${url}');`
+    codeToEval += '\n\n' + await ( await fetch(cdns[key]) ).text()
+    codeToEval += '\n\nconsole.log("Done");'
+  }
+
+  eval(codeToEval)
+  
+}
+
+// Create an axios instance
+axios = axios.create({
+  baseURL: 'https://us.smartcat.com/'
+})
+
+// Add rate limit (max 3 requests per second)
+axios = axiosRateLimit(axios, { maxRPS: 3 })
+
+let { filter, find, flatten, forEach, identity, map, mapValues, range, uniq, without } = _
+let { assign } = Object
 
 multiCallback = ( callback = identity ) =>
   async listPromise =>
@@ -381,7 +406,9 @@ allProjects = async () => {
   let lastProjectId, lastProjectModificationDate
   while ( true ) {
     let { data: { projects, hasMoreProjects }} = 
-      await axios.get('ssr-projects/page?tab=0', { params: { lastProjectId, lastProjectModificationDate }})
+      await axios.get('ssr-projects/page?tab=0', { 
+        params: { lastProjectId, lastProjectModificationDate }
+      })
     allProjects.push(...projects)
     if ( !hasMoreProjects )
       break
@@ -444,25 +471,37 @@ getDocumentListId = async document => {
   return documentListId
 }
 
-getDocumentAssignments = async document =>
-  (
-    await data(axios.get(`api/WorkflowAssignments/${document.projectId}/GetWorkflowStages?documentListId=${
-      await getDocumentListId(document)
-    }`))
-  ).map( assignment => {
-    let { name, targetLanguageId: languageId } = assignment
-    let { targets, wordsCount } = document
-    let workflowStage = find(
-      find(
-        targets, { languageId }
-      ).workflowStages, { name }
-    )
-    return {
-      ...assignment, document,
-      workflowStage,
-      wordsLeft: wordsCount - workflowStage.wordsTranslated
-    }
-  })
+getDocumentAssignments = async document => {
+
+  try {
+    return (
+      await data(
+        retry(
+          async () => axios.get(`api/WorkflowAssignments/${document.projectId}/GetWorkflowStages?documentListId=${
+            await getDocumentListId(document)
+          }`)
+        )
+      )
+    ).map( assignment => {
+      let { name, targetLanguageId: languageId } = assignment
+      let { targets, wordsCount } = document
+      let workflowStage = find(
+        find(
+          targets, { languageId }
+        ).workflowStages, { name }
+      )
+      return {
+        ...assignment, document,
+        workflowStage,
+        wordsLeft: wordsCount - workflowStage.wordsTranslated
+      }
+    })
+  } catch ( e ) {
+    console.log(e)
+    return []
+  }
+
+}
 
 allAssignments = async ( predicate = identity, callback = identity ) => {
   let assignments = await allDocuments(getDocumentAssignments)
@@ -758,3 +797,37 @@ projectsByCompletedWordCount = projects =>
     wordCount: totalSourceWordsCount*progress/100
   }))
   .orderBy('wordCount', 'desc').value()
+
+// Function to do all the stuff you usually have to do
+async function doAll({ dont = [] } = {}) {
+
+  let actions = {
+    completeProjects: () => allProjects().then( projects => 
+      projects.forEach(completeProject)
+    ),
+    assign: () => getUnassignedForTemplate(assignFromTemplate),
+    nudge: () => assignmentsDueIn(0, nudge),
+    pretranslate: () => allSegmentsWithMatches(['unconfirmed'], pretranslateSegment),
+    completeTargets: () => completeFinishedTargets()
+  }
+
+  for(key in actions) {
+
+    try {
+      if ( !dont.includes(key) ) {
+        console.log('Current action: ', key)
+        await actions[key]()
+        console.log('Action completed: ', key)
+      }
+    } catch(error) {
+      log({error})
+    }
+
+  }
+  
+}
+
+
+module.exports = {
+  allSegmentsWithMatches
+}
